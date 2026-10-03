@@ -18,6 +18,7 @@ import {
 } from './api'
 import Globe from './components/Globe'
 import AskPanel from './assistant/AskPanel'
+import { deriveMarketMetrics, etaSeconds, jobSubmitBody, jobTransferProgress } from './jobUi'
 import './App.css'
 
 function fmt(n: number | null | undefined, d = 1) {
@@ -43,36 +44,6 @@ const STAGE_LABEL: Record<Job['state'], string> = {
   canceled: 'Canceled',
 }
 
-function jobTransferProgress(job: Job, transfers: Transfer[]) {
-  const own = transfers.filter((t) => t.job_id === job.id)
-  if (own.length === 0) {
-    if (job.state === 'completed') return 100
-    if (job.state === 'running' || job.state === 'queued') return 50
-    if (job.state === 'output_transfer') return 75
-    return job.state === 'planned' || job.state === 'submitted' ? 0 : null
-  }
-  const relevant =
-    job.state === 'input_transfer'
-      ? own.filter((t) => t.direction === 'input')
-      : job.state === 'output_transfer'
-        ? own.filter((t) => t.direction === 'output')
-        : own
-  const list = relevant.length ? relevant : own
-  const total = list.reduce((s, t) => s + t.bytes_total, 0)
-  const sent = list.reduce((s, t) => s + t.bytes_sent, 0)
-  if (!total) return job.state === 'completed' ? 100 : 0
-  // Blend route progress with stage so compute shows mid-job progress.
-  const raw = (sent / total) * 100
-  if (job.state === 'running' || job.state === 'queued') return Math.max(raw, 55)
-  if (job.state === 'completed') return 100
-  return raw
-}
-
-function etaSeconds(job: Job, plan: Plan | null, t: number): number | null {
-  if (job.state === 'completed' || job.state === 'failed' || job.state === 'canceled') return null
-  if (!plan) return null
-  return Math.max(0, plan.estimated_completion - t)
-}
 
 export default function App() {
   const [nodes, setNodes] = useState<ComputeNode[]>([])
@@ -228,22 +199,7 @@ export default function App() {
     }
   }
 
-  const marketMetrics = useMemo(() => {
-    if (!marketReport) return null
-    const rates = marketReport.deadline_hit_rate || {}
-    const fromRows = Object.fromEntries(
-      (marketReport.per_tenant || []).map((r) => [r.tenant_id, r.deadline_hit_rate]),
-    )
-    const hitA = rates.alpha ?? rates.A ?? fromRows.alpha ?? fromRows.A
-    const hitB = rates.beta ?? rates.B ?? fromRows.beta ?? fromRows.B
-    return {
-      hitA,
-      hitB,
-      stolen: marketReport.stolen_windows,
-      costAware: marketReport.cost_reservation_aware,
-      costGlobal: marketReport.cost_global_cheapest_ignores_tenants,
-    }
-  }, [marketReport])
+  const marketMetrics = useMemo(() => deriveMarketMetrics(marketReport), [marketReport])
 
   const selectedOrbital = useMemo(
     () => nodes.find((n) => n.id === selectedId && n.kind === 'orbital') || null,
@@ -437,14 +393,7 @@ export default function App() {
   const submit = () =>
     run(async () => {
       const t = settings?.t ?? 0
-      const res = await api.submitJob({
-        input_bytes: Math.round(form.input_mb * 1_000_000),
-        output_bytes: Math.round(form.output_mb * 1_000_000),
-        work: form.work,
-        deadline_at: t + form.deadline_offset,
-        source_id: form.source_id,
-        destination_id: form.destination_id,
-      })
+      const res = await api.submitJob(jobSubmitBody(form, t))
       selectJob(res.job, res.plan)
     })
 
@@ -580,10 +529,11 @@ export default function App() {
         <aside className="side">
           <section className="section">
             <h2>New job</h2>
-            <div className="form-grid">
+            <div className="form-grid" data-testid="job-form">
               <label>
                 Input (MB)
                 <input
+                  data-testid="input-mb"
                   type="number"
                   min={0.1}
                   step={0.1}
@@ -594,6 +544,7 @@ export default function App() {
               <label>
                 Output (MB)
                 <input
+                  data-testid="output-mb"
                   type="number"
                   min={0.1}
                   step={0.1}
@@ -604,6 +555,7 @@ export default function App() {
               <label>
                 Work units
                 <input
+                  data-testid="work"
                   type="number"
                   value={form.work}
                   onChange={(e) => setForm({ ...form, work: Number(e.target.value) })}
@@ -612,6 +564,7 @@ export default function App() {
               <label>
                 Deadline (s)
                 <input
+                  data-testid="deadline-offset"
                   type="number"
                   value={form.deadline_offset}
                   onChange={(e) =>
@@ -649,6 +602,7 @@ export default function App() {
             <button
               type="button"
               className="primary wide"
+              data-testid="submit-job"
               disabled={busy}
               onClick={submit}
             >
@@ -658,6 +612,7 @@ export default function App() {
             <button
               type="button"
               className="more"
+              data-testid="toggle-examples"
               onClick={() => setShowMore((v) => !v)}
             >
               {showMore ? 'Hide examples' : 'Examples'}
@@ -667,6 +622,7 @@ export default function App() {
                 <button
                   type="button"
                   data-action="thesis-a"
+                  data-testid="thesis-a"
                   disabled={busy}
                   onClick={() => thesis('a')}
                 >
@@ -675,6 +631,7 @@ export default function App() {
                 <button
                   type="button"
                   data-action="thesis-b"
+                  data-testid="thesis-b"
                   disabled={busy}
                   onClick={() => thesis('b')}
                 >
@@ -897,6 +854,7 @@ export default function App() {
             <button
               type="button"
               className="more"
+              data-testid="toggle-advanced"
               onClick={() => setShowAdvanced((v) => !v)}
             >
               {showAdvanced ? 'Hide advanced' : 'Advanced'}
@@ -931,6 +889,7 @@ export default function App() {
                 <label className="adv-label">
                   Tenant
                   <select
+                    data-testid="tenant-select"
                     value={tenantId || 'local'}
                     disabled={busy || marketBusy}
                     onChange={(e) => switchTenant(e.target.value)}
@@ -965,6 +924,7 @@ export default function App() {
                   </button>
                   <button
                     type="button"
+                    data-testid="run-market-day"
                     disabled={busy || marketBusy || evalBusy}
                     onClick={() => void runMarketDay()}
                   >
@@ -976,7 +936,7 @@ export default function App() {
                   <p className="muted adv-hint">Loading tenant list…</p>
                 )}
                 {marketMetrics && (
-                  <div className="eval-report market-report">
+                  <div className="eval-report market-report" data-testid="market-report">
                     <p className="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.85rem' }}>
                       Market day
                       {marketReport?.seed != null ? ` · seed ${marketReport.seed}` : ''}

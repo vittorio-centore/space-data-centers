@@ -94,9 +94,23 @@ Legacy unversioned paths (`/health`, `/jobs`, …) remain for the current fronte
 
 ### Tests
 
+One command (backend pytest + frontend Vitest + Playwright smoke):
+
 ```bash
-cd backend && PYTHONPATH=. python3 -m pytest -q
+./scripts/test.sh
 ```
+
+Markers: `unit`, `integration`, `e2e`. Skip browser smoke with `SDC_SKIP_PLAYWRIGHT=1`. Subsets:
+
+```bash
+cd backend && PYTHONPATH=. python3 -m pytest -q -m unit
+cd backend && PYTHONPATH=. python3 -m pytest -q -m integration
+cd backend && PYTHONPATH=. python3 -m pytest -q -m e2e
+cd frontend && npm test
+cd frontend && npm run test:e2e   # after: npx playwright install chromium
+```
+
+Tests drive the **sim clock** (`seek` / `step`); they do not `sleep` on wall time. See the project testing notes for the coverage map.
 
 ### Env
 

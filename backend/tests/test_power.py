@@ -1,4 +1,4 @@
-from app.physics.power_thermal import PowerThermalModel, in_cylindrical_eclipse, sun_ecef_unit
+from app.physics.power_thermal import LABELS, PowerThermalModel, in_cylindrical_eclipse, sun_ecef_unit
 from datetime import datetime, timezone
 
 
@@ -30,3 +30,6 @@ def test_orbital_state_labelled(world):
     assert pt["labels"]["eclipse"] == "cylindrical_earth_shadow"
     m = PowerThermalModel()
     assert 0.0 <= m.predict_factor("x", (7e6, 0, 0), world.orbit.datetime_at(0)) <= 1.0
+    for key, value in LABELS.items():
+        assert pt["labels"][key] == value
+    assert "not spacecraft telemetry" in (pt.get("notes") or "").lower() or "labelled" in pt["labels"]["source"]
