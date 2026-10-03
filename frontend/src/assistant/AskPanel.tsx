@@ -152,14 +152,17 @@ export default function AskPanel({ onAfterAction }: { onAfterAction?: () => Prom
     <section className="ask-panel">
       <button type="button" className="ask-toggle" onClick={() => setOpen((v) => !v)}>
         <h2>Ask Grok</h2>
-        <span className="ask-mode">{open ? 'Hide' : modeLabel}</span>
+        <span className="ask-mode" data-testid="ask-mode-label">
+          {open ? 'Hide' : modeLabel}
+        </span>
       </button>
       {open && (
         <div className="ask-body">
-          <p className="ask-hint">
+          <p className="ask-hint" data-testid="ask-mode-note">
             {live
-              ? 'Live Grok + xAI Voice. Commands are validated; the planner still chooses the node.'
-              : 'Offline intent parser (no XAI_API_KEY). Browser speech still runs the same tools.'}
+              ? 'Live Grok + xAI Voice. Every command is validated; the planner still chooses the node.'
+              : status?.note ||
+                'Offline (no XAI_API_KEY). Keyword parser + browser speech; the same validated tools run.'}
           </p>
           {lines.length > 0 && (
             <div className="ask-log" aria-live="polite">

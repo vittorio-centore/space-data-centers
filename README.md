@@ -72,15 +72,17 @@ The collapsible **Ask Grok** panel shares one assistant for typed commands and v
 
 ```bash
 export XAI_API_KEY=xai-...          # required for live Grok + xAI STT/TTS
-export XAI_MODEL=grok-4             # optional
+export XAI_MODEL=grok-4             # optional (default grok-4)
 export XAI_API_BASE=https://api.x.ai/v1
+export XAI_STT_MODEL=grok-voice-transcribe-2.0
+export XAI_TTS_VOICE=eve
 # then start the backend as above
 ```
 
-Without a key the same tools run through a keyword intent parser. Voice then uses the browser speech API and still hits `POST /assistant/ask`. Live voice posts audio to `POST /assistant/voice` (xAI STT), then the same validated pipeline; replies may include TTS.
+Without a key the same tools run through a keyword intent parser. The Ask panel and every reply are labelled **Offline (no XAI_API_KEY)**. Voice then uses the browser speech API and still hits `POST /assistant/ask`. Live voice posts audio to `POST /assistant/voice` (`POST /v1/stt`), then the same validated pipeline; replies may include TTS (`POST /v1/tts`). Live Grok uses the Responses API (`POST /v1/responses`) with a chat/completions fallback, then sends validated tool results back for a short summary.
 
 ```bash
-cd backend && PYTHONPATH=. python3 -m pytest tests/test_assistant_intents.py tests/test_assistant_parser.py
+cd backend && PYTHONPATH=. python3 -m pytest tests/test_assistant_intents.py tests/test_assistant_parser.py tests/test_assistant_parser_edges.py tests/test_assistant_grok.py tests/test_assistant_service.py
 ```
 
 ### Thesis demos
@@ -124,6 +126,11 @@ Tests drive the **sim clock** (`seek` / `step`); they do not `sleep` on wall tim
 | `SDC_TENANT_KEYS` | unset | Optional `key:tenant` map, e.g. `sdc-alpha:alpha,sdc-beta:beta`. Enables per-tenant keys. Open mode always acts as `local`. |
 | `SDC_DEFAULT_TENANT` | `local` | Default-open tenant id. Cannot smash seeded `alpha`/`beta` rows. |
 | `SDC_INSTANCE_LOCK` | `1` | Exclusive flock on `<db>.owner.lock`. One WAL owner; not a cluster. Set `0` only for unsupported experiments. |
+| `XAI_API_KEY` | unset | Enables live Grok + xAI Voice. Unset = offline parser (no outbound xAI calls). |
+| `XAI_API_BASE` | `https://api.x.ai/v1` | xAI HTTP base. |
+| `XAI_MODEL` | `grok-4` | Responses / chat model. |
+| `XAI_STT_MODEL` | `grok-voice-transcribe-2.0` | Speech-to-text model. |
+| `XAI_TTS_VOICE` | `eve` | TTS `voice_id`. |
 
 ## Reality boundary
 

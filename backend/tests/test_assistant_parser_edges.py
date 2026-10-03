@@ -52,3 +52,26 @@ def test_explain_with_job_id():
 def test_unknown_falls_back_to_read_state():
     act = _parse("hello there constellation")
     assert act.tool == "read_state"
+
+
+def test_smalltalk_is_empty():
+    assert parse_offline("hello") == []
+    assert parse_offline("thanks!") == []
+
+
+def test_start_a_job_and_clock_verbs():
+    assert _parse("start a job").tool == "submit_job"
+    assert _parse("start the simulation").tool == "play"
+    assert _parse("stop the clock").tool == "pause"
+
+
+def test_job_deadline_and_compact_mb():
+    act = _parse("submit a job with 8MB input deadline 2 hours")
+    assert act.args["input_bytes"] == 8_000_000
+    assert act.args["deadline_offset_s"] == 7200
+
+
+def test_restore_iss_ashburn_without_link_word():
+    act = _parse("restore iss ashburn")
+    assert act.tool == "disrupt_link"
+    assert act.args["action"] == "clear"

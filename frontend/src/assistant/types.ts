@@ -8,6 +8,7 @@ export interface AssistantStatus {
   model: string | null
   tools: string[]
   planner: string
+  note?: string | null
 }
 
 export interface AssistantAction {
@@ -29,6 +30,7 @@ export interface AssistantAskResult {
   audio_b64?: string | null
   transcript?: string | null
   error?: string
+  note?: string | null
 }
 
 export interface ChatLine {

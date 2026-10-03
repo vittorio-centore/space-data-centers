@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
+import { getTenantContext } from '../api'
 import type { AssistantAskResult, AssistantStatus } from './types'
 
 const API = '/api'
+
+function assistantHeaders(json = false): Record<string, string> {
+  const { tenantId, apiKey } = getTenantContext()
+  const h: Record<string, string> = {}
+  if (json) h['Content-Type'] = 'application/json'
+  if (tenantId) h['X-Tenant-Id'] = tenantId
+  if (apiKey) h['X-API-Key'] = apiKey
+  return h
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, init)
@@ -18,7 +28,7 @@ export function useAssistant() {
 
   const refreshStatus = useCallback(async () => {
     try {
-      const s = await req<AssistantStatus>('/assistant/status')
+      const s = await req<AssistantStatus>('/assistant/status', { headers: assistantHeaders() })
       setStatus(s)
       setError(null)
       return s
@@ -35,7 +45,7 @@ export function useAssistant() {
   const ask = useCallback(async (text: string, source: 'text' | 'voice' = 'text') => {
     return req<AssistantAskResult>('/assistant/ask', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: assistantHeaders(true),
       body: JSON.stringify({ text, source }),
     })
   }, [])
@@ -45,6 +55,7 @@ export function useAssistant() {
     fd.append('file', blob, 'clip.webm')
     return req<AssistantAskResult>('/assistant/voice?speak=true', {
       method: 'POST',
+      headers: assistantHeaders(false),
       body: fd,
     })
   }, [])
