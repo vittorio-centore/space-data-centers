@@ -98,6 +98,28 @@
   flex: 1;
   min-height: 400px;
   position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  z-index: 0;
+}
+
+/* Prevent R3F/drei Html portals from intercepting sidebar clicks */
+.globe-wrap canvas {
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+}
+
+.globe-label {
+  pointer-events: none !important;
+}
+
+.side,
+.side.right,
+.top,
+.reality-strip {
+  position: relative;
+  z-index: 5;
 }
 
 .globe-legend {
@@ -189,6 +211,13 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.sim-controls button,
+.thesis-grid button {
+  position: relative;
+  z-index: 6;
+  pointer-events: auto;
 }
 
 .wide {

@@ -118,9 +118,18 @@ function Earth() {
 }
 
 function MarkerLabel({ text, tone }: { text: string; tone: 'real' | 'sim' }) {
+  // pointerEvents must be on Html itself — wrappers can otherwise steal sidebar clicks
   return (
-    <Html distanceFactor={6} style={{ pointerEvents: 'none' }} center>
-      <div className={`globe-label globe-label-${tone}`}>{text}</div>
+    <Html
+      distanceFactor={6}
+      center
+      pointerEvents="none"
+      zIndexRange={[1, 0]}
+      style={{ pointerEvents: 'none' }}
+    >
+      <div className={`globe-label globe-label-${tone}`} style={{ pointerEvents: 'none' }}>
+        {text}
+      </div>
     </Html>
   )
 }
@@ -148,9 +157,11 @@ function StationMarker({
         <coneGeometry args={[selected ? 0.028 : 0.02, selected ? 0.055 : 0.04, 5]} />
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.45} />
       </mesh>
-      <group position={[0, 0.05, 0]}>
-        <MarkerLabel text={`${short} · configured site`} tone="sim" />
-      </group>
+      {selected && (
+        <group position={[0, 0.05, 0]}>
+          <MarkerLabel text={`${short} · configured site`} tone="sim" />
+        </group>
+      )}
     </group>
   )
 }
@@ -216,12 +227,14 @@ function OrbitalMarker({
             side={THREE.DoubleSide}
           />
         </mesh>
-        <group position={[0, 0.06, 0]}>
-          <MarkerLabel
-            text={`${label} · $${node.price_per_work}/wu · sim $`}
-            tone="sim"
-          />
-        </group>
+        {selected && (
+          <group position={[0, 0.06, 0]}>
+            <MarkerLabel
+              text={`${label} · $${node.price_per_work}/wu · sim $`}
+              tone="sim"
+            />
+          </group>
+        )}
       </group>
     </group>
   )
@@ -252,9 +265,11 @@ function EarthNodeMarker({
           emissiveIntensity={0.4}
         />
       </mesh>
-      <group position={[0, 0.05, 0]}>
-        <MarkerLabel text={`${node.name.split(' ')[0]} DC · sim $`} tone="sim" />
-      </group>
+      {selected && (
+        <group position={[0, 0.05, 0]}>
+          <MarkerLabel text={`${node.name.split(' ')[0]} DC · sim $`} tone="sim" />
+        </group>
+      )}
     </group>
   )
 }

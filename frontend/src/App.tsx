@@ -196,7 +196,9 @@ export default function App() {
   }, [applySnapshot, scheduleRefresh])
 
   const run = async (fn: () => Promise<unknown>) => {
+    if (busy) return
     setBusy(true)
+    const safety = window.setTimeout(() => setBusy(false), 30000)
     try {
       await fn()
       await applySnapshot()
@@ -205,22 +207,32 @@ export default function App() {
     } catch (e) {
       setStatus(`Error: ${(e as Error).message}`)
     } finally {
+      window.clearTimeout(safety)
       setBusy(false)
     }
   }
 
   const play = () => {
     setSettings((s) => (s ? { ...s, playing: true } : s))
-    api.play().catch((e) => setStatus(`Error: ${(e as Error).message}`))
+    setStatus('Playing…')
+    api
+      .play()
+      .then(() => setStatus('Live'))
+      .catch((e) => setStatus(`Error: ${(e as Error).message}`))
   }
 
   const pause = () => {
     setSettings((s) => (s ? { ...s, playing: false } : s))
-    api.pause().catch((e) => setStatus(`Error: ${(e as Error).message}`))
+    setStatus('Paused')
+    api
+      .pause()
+      .then(() => setStatus('Live'))
+      .catch((e) => setStatus(`Error: ${(e as Error).message}`))
   }
 
   const stepOnce = () => {
-    api.step()
+    api
+      .step()
       .then(() => applySnapshot())
       .catch((e) => setStatus(`Error: ${(e as Error).message}`))
   }
@@ -316,22 +328,40 @@ export default function App() {
         <aside className="side">
           <section className="panel controls">
             <h2>Simulation</h2>
-            <div className="row">
+            <div className="row sim-controls">
               <button
                 type="button"
+                data-action="play"
                 className={`primary ${settings?.playing ? 'active' : ''}`}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  play()
+                }}
                 onClick={play}
               >
                 Play
               </button>
               <button
                 type="button"
+                data-action="pause"
                 className={!settings?.playing ? 'active' : ''}
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  pause()
+                }}
                 onClick={pause}
               >
                 Pause
               </button>
-              <button type="button" onClick={stepOnce}>
+              <button
+                type="button"
+                data-action="step"
+                onPointerDown={(e) => {
+                  e.preventDefault()
+                  stepOnce()
+                }}
+                onClick={stepOnce}
+              >
                 Step
               </button>
               <button
@@ -382,8 +412,14 @@ export default function App() {
             <div className="thesis-grid">
               <button
                 type="button"
+                data-action="thesis-a"
                 className={`thesis-btn case-a ${activeThesis === 'a' ? 'active' : ''}`}
                 disabled={busy}
+                onPointerDown={(e) => {
+                  if (busy) return
+                  e.preventDefault()
+                  runThesis('a')
+                }}
                 onClick={() => runThesis('a')}
               >
                 <strong>Case A — cheap loses</strong>
@@ -394,8 +430,14 @@ export default function App() {
               </button>
               <button
                 type="button"
+                data-action="thesis-b"
                 className={`thesis-btn case-b ${activeThesis === 'b' ? 'active' : ''}`}
                 disabled={busy}
+                onPointerDown={(e) => {
+                  if (busy) return
+                  e.preventDefault()
+                  runThesis('b')
+                }}
                 onClick={() => runThesis('b')}
               >
                 <strong>Case B — cheap wins</strong>
