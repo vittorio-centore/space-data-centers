@@ -28,11 +28,13 @@ from app.models.types import (
     Plan,
     Reservation,
     Settings,
+    TenantFile,
     Transfer,
     TransferDirection,
     TransferState,
     WorkerStatus,
 )
+from app.tenants import DEFAULT_TENANT_ID, Tenant, seed_tenants
 from app.instance import InstanceGuard
 from app.orbit.contacts import ContactModel, VisibilityMatrix, earth_occludes
 from app.orbit.propagate import OrbitEngine, elevation_deg, geodetic_to_ecef, range_m
@@ -70,6 +72,9 @@ class SimWorld:
         self._rr_index = 0
         self.plan_revisions: list[Plan] = []
         self.evaluations: dict[str, dict[str, Any]] = {}
+        self.tenants: dict[str, Tenant] = seed_tenants()
+        self.files: dict[tuple[str, str], TenantFile] = {}
+        self.stolen_windows: int = 0
         try:
             self._apply_topology(build_scenario(self.config.scenario))
         except Exception as e:
@@ -97,6 +102,7 @@ class SimWorld:
         self._refresh_power(mutate=False)
         if restore and self.store:
             self._restore()
+        self._persist_tenants()
 
     def close(self) -> None:
         if self.store:
@@ -347,12 +353,132 @@ class SimWorld:
                 [r.model_dump() for r in self.link_reservations],
             )
 
+    def _persist_clock(self) -> None:
+        if self.store:
+            self.store.set_meta("t", self.settings.t)
+            self.store.set_meta("disrupted", self.settings.disrupted_links)
+            self.store.set_meta("id_seq", self.ids.n)
+            self.store.set_meta("stolen_windows", self.stolen_windows)
+
+    def _persist_tenants(self) -> None:
+        if self.store:
+            for t in self.tenants.values():
+                self.store.put_tenant(t.model_dump())
+
+    def jobs_for(self, tenant_id: str) -> list[Job]:
+        return [j for j in self.jobs.values() if j.tenant_id == tenant_id]
+
+    def get_job(self, job_id: str, tenant_id: str) -> Optional[Job]:
+        job = self.jobs.get(job_id)
+        if job and job.tenant_id == tenant_id:
+            return job
+        return None
+
+    def reserved_seconds(self, tenant_id: str) -> float:
+        return sum(max(0.0, r.end - r.start) for r in self.reservations if r.tenant_id == tenant_id)
+
+    def outstanding_jobs(self, tenant_id: str) -> int:
+        return sum(
+            1
+            for j in self.jobs.values()
+            if j.tenant_id == tenant_id
+            and j.state not in (JobState.completed, JobState.failed, JobState.canceled)
+        )
+
+    def outstanding_work(self, tenant_id: str) -> float:
+        return sum(
+            j.work
+            for j in self.jobs.values()
+            if j.tenant_id == tenant_id
+            and j.state not in (JobState.completed, JobState.failed, JobState.canceled)
+        )
+
+    def quota_snapshot(self, tenant_id: str) -> dict[str, Any]:
+        ten = self.tenants.get(tenant_id)
+        return {
+            "tenant_id": tenant_id,
+            "reserved_s": self.reserved_seconds(tenant_id),
+            "outstanding_jobs": self.outstanding_jobs(tenant_id),
+            "outstanding_work": self.outstanding_work(tenant_id),
+            "quota_reserved_s": ten.quota_reserved_s if ten else None,
+            "quota_outstanding_jobs": ten.quota_outstanding_jobs if ten else None,
+            "quota_work": ten.quota_work if ten else None,
+        }
+
+    def _quota_block(self, tenant_id: str, extra_s: float, extra_work: float) -> Optional[str]:
+        ten = self.tenants.get(tenant_id)
+        if not ten:
+            return None
+        if self.outstanding_jobs(tenant_id) + 1 > ten.quota_outstanding_jobs:
+            return "quota_outstanding_jobs"
+        if self.reserved_seconds(tenant_id) + extra_s > ten.quota_reserved_s + 1e-9:
+            return "quota_reserved_s"
+        if self.outstanding_work(tenant_id) + extra_work > ten.quota_work + 1e-9:
+            return "quota_work"
+        return None
+
+    def put_file(self, tenant_id: str, path: str, data: bytes, content_type: str = "application/octet-stream") -> TenantFile:
+        import base64
+
+        clean = path.lstrip("/")
+        rec = TenantFile(
+            tenant_id=tenant_id,
+            path=clean,
+            content_b64=base64.b64encode(data).decode("ascii"),
+            content_type=content_type or "application/octet-stream",
+            nbytes=len(data),
+        )
+        self.files[(tenant_id, clean)] = rec
+        if self.store:
+            self.store.put_file(rec.model_dump())
+        return rec
+
+    def get_file(self, tenant_id: str, path: str) -> Optional[TenantFile]:
+        return self.files.get((tenant_id, path.lstrip("/")))
+
+    def list_files(self, tenant_id: str) -> list[TenantFile]:
+        return [f for (tid, _p), f in self.files.items() if tid == tenant_id]
+
+    def _reservation_overlap(self, node_id: str, start: float, end: float, *, skip_job: Optional[str] = None) -> bool:
+        for r in self.reservations:
+            if r.node_id != node_id:
+                continue
+            if skip_job and r.job_id == skip_job:
+                continue
+            if start < r.end - 1e-9 and r.start < end - 1e-9:
+                return True
+        return False
+
+    def _link_overlap(self, link_id: str, start: float, end: float, *, skip_job: Optional[str] = None) -> bool:
+        for r in self.link_reservations:
+            if r.link_id != link_id:
+                continue
+            if skip_job and r.job_id == skip_job:
+                continue
+            if start < r.end - 1e-9 and r.start < end - 1e-9:
+                return True
+        return False
+
+    def _stolen_if_accept(self, job: Job, plan: Plan) -> int:
+        n = 0
+        if self._reservation_overlap(plan.compute_node_id, plan.compute_start, plan.compute_end, skip_job=job.id):
+            n += 1
+        for hop in list(plan.input_route) + list(plan.output_route):
+            if hop.link_id and self._link_overlap(hop.link_id, hop.window_start, hop.window_end, skip_job=job.id):
+                n += 1
+        return n
+
     def _apply_reservations(self, job: Job, plan: Plan) -> None:
+        stolen = self._stolen_if_accept(job, plan)
+        if stolen:
+            self.stolen_windows += stolen
+            raise RuntimeError("exclusive_reservation_conflict")
         self.reservations = [r for r in self.reservations if r.job_id != job.id]
         self.link_reservations = [r for r in self.link_reservations if r.job_id != job.id]
         self.reservations.append(
             Reservation(
                 job_id=job.id,
+                tenant_id=job.tenant_id,
                 node_id=plan.compute_node_id,
                 start=plan.compute_start,
                 end=plan.compute_end,
@@ -363,6 +489,7 @@ class SimWorld:
                 self.link_reservations.append(
                     LinkReservation(
                         job_id=job.id,
+                        tenant_id=job.tenant_id,
                         link_id=hop.link_id,
                         start=hop.window_start,
                         end=hop.window_end,
@@ -384,7 +511,16 @@ class SimWorld:
             self.settings.disrupted_links = meta["disrupted"]
         if "id_seq" in meta:
             self.ids.n = int(meta["id_seq"])
+        if "stolen_windows" in meta:
+            self.stolen_windows = int(meta["stolen_windows"])
         self.node_outages = data.get("outages") or {}
+        if data.get("tenants"):
+            for row in data["tenants"]:
+                ten = Tenant.model_validate(row)
+                self.tenants[ten.id] = ten
+        for row in data.get("files") or []:
+            rec = TenantFile.model_validate(row)
+            self.files[(rec.tenant_id, rec.path)] = rec
         for j in data.get("jobs") or []:
             job = Job.model_validate(j)
             self.jobs[job.id] = job
@@ -416,8 +552,25 @@ class SimWorld:
                 if ids:
                     forced = ids[self._rr_index % len(ids)]
                     self._rr_index += 1
+            tenant_id = str(body.get("tenant_id") or DEFAULT_TENANT_ID)
+            if tenant_id not in self.tenants:
+                self.tenants[tenant_id] = Tenant(id=tenant_id, display_name=tenant_id)
+                self._persist_tenants()
+            name = body.get("name")
+            name = str(name).strip() if name else None
+            qerr = self._quota_block(tenant_id, extra_s=0.0, extra_work=float(body.get("work", 200.0)))
+            if qerr == "quota_outstanding_jobs" or qerr == "quota_work":
+                return {
+                    "job": None,
+                    "plan": None,
+                    "baseline_comparison": None,
+                    "error": qerr,
+                    "code": "quota_exceeded",
+                }
             job = Job(
                 id=self.ids.next("job"),
+                tenant_id=tenant_id,
+                name=name,
                 submitted_at=self.settings.t,
                 input_bytes=int(body.get("input_bytes", 5_000_000)),
                 output_bytes=int(body.get("output_bytes", 1_000_000)),
@@ -460,6 +613,32 @@ class SimWorld:
             planner.enrich_reasons(plan, job)
             plan.policy = policy
             plan.job_id = job.id
+            plan.tenant_id = job.tenant_id
+            qerr = self._quota_block(tenant_id, extra_s=max(0.0, plan.compute_end - plan.compute_start), extra_work=0.0)
+            if qerr:
+                job.state = JobState.failed
+                job.fail_reason = qerr
+                self._persist_job(job)
+                return {
+                    "job": job.model_dump(),
+                    "plan": None,
+                    "baseline_comparison": plan.baseline_comparison.model_dump() if plan.baseline_comparison else None,
+                    "error": qerr,
+                    "code": "quota_exceeded",
+                }
+            if self._stolen_if_accept(job, plan):
+                self.stolen_windows += self._stolen_if_accept(job, plan)
+                job.state = JobState.failed
+                job.fail_reason = "exclusive_reservation_conflict"
+                self._persist_job(job)
+                self._persist_clock()
+                return {
+                    "job": job.model_dump(),
+                    "plan": None,
+                    "baseline_comparison": plan.baseline_comparison.model_dump() if plan.baseline_comparison else None,
+                    "error": job.fail_reason,
+                    "code": "reservation_conflict",
+                }
             self.plans[plan.id] = plan
             self.plan_revisions.append(plan)
             job.plan_id = plan.id
@@ -468,6 +647,7 @@ class SimWorld:
             self._apply_reservations(job, plan)
             self._persist_job(job)
             self._persist_plan(plan)
+            self._persist_clock()
             await self.emit(
                 "plan_created",
                 {"job_id": job.id, "plan": plan.model_dump()},
@@ -508,6 +688,7 @@ class SimWorld:
         tr = Transfer(
             id=self.ids.next("xfer"),
             job_id=job.id,
+            tenant_id=job.tenant_id,
             direction=TransferDirection.input,
             from_id=hop.from_id,
             to_id=hop.to_id,
@@ -546,6 +727,7 @@ class SimWorld:
         tr = Transfer(
             id=self.ids.next("xfer"),
             job_id=job.id,
+            tenant_id=job.tenant_id,
             direction=TransferDirection.output,
             from_id=hop.from_id,
             to_id=hop.to_id,
@@ -659,6 +841,7 @@ class SimWorld:
             new_tr = Transfer(
                 id=self.ids.next("xfer"),
                 job_id=job.id,
+                tenant_id=job.tenant_id,
                 direction=tr.direction,
                 from_id=hop.from_id,
                 to_id=hop.to_id,
@@ -847,6 +1030,7 @@ class SimWorld:
             self.settings.t = max(0.0, float(t))
             for ev in self._update_positions_and_links():
                 self.events.append(ev)
+            self._persist_clock()
             await self.emit("metric", {"seek": True, "t": self.settings.t})
 
     async def reset(self) -> None:
@@ -877,6 +1061,8 @@ class SimWorld:
             self.events.clear()
             self.plan_revisions.clear()
             self.node_outages.clear()
+            self.files.clear()
+            self.stolen_windows = 0
             self.ids = IdSeq()
             self._rr_index = 0
             self.power.reset()
@@ -902,6 +1088,7 @@ class SimWorld:
         if job.state in (JobState.completed, JobState.failed, JobState.canceled):
             return job
         job.state = JobState.canceled
+        self._persist_job(job)
         if job_id in self._worker_procs:
             self._worker_procs[job_id].kill()
             del self._worker_procs[job_id]
@@ -1098,6 +1285,7 @@ class SimWorld:
             "nodes": [n.model_dump() for n in self.nodes],
             "stations": [s.model_dump() for s in self.stations],
             "links": [L.model_dump() for L in self.links],
+            "tenants": [t.model_dump() for t in self.tenants.values()],
             "jobs": [j.model_dump() for j in self.jobs.values()],
             "plans": [p.model_dump() for p in self.plans.values()],
             "transfers": [t.model_dump() for t in self.transfers.values()],
@@ -1131,6 +1319,8 @@ class SimWorld:
             "links_up": links_up,
             "links_total": len(self.links),
             "t": self.settings.t,
+            "stolen_windows": self.stolen_windows,
+            "quotas": {tid: self.quota_snapshot(tid) for tid in self.tenants},
             "active_transfers": sum(
                 1 for t in self.transfers.values() if t.state == TransferState.active
             ),
@@ -1241,12 +1431,19 @@ class SimWorld:
             ),
         }
 
-    async def submit_thesis(self, case: str) -> dict[str, Any]:
-        """Seek to scenario time, reset jobs, submit Case A or B."""
+    async def submit_thesis(
+        self,
+        case: str,
+        tenant_id: str = DEFAULT_TENANT_ID,
+        *,
+        reset: bool = True,
+    ) -> dict[str, Any]:
+        """Seek to scenario time, optionally reset jobs, submit Case A or B for one tenant."""
         presets = self.thesis_presets()
         key = "case_a" if case in ("a", "case_a", "case_a_cheap_loses") else "case_b"
         spec = presets[key]
-        await self.reset()
+        if reset:
+            await self.reset()
         await self.seek(float(spec["recommended_sim_t"]))
         body = {
             "input_bytes": spec["input_bytes"],
@@ -1256,6 +1453,8 @@ class SimWorld:
             "source_id": spec["source_id"],
             "destination_id": spec["destination_id"],
             "preset": spec["name"],
+            "tenant_id": tenant_id,
+            "name": spec["name"],
         }
         result = await self.submit_job(body)
         result["preset"] = spec
