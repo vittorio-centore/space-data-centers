@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   connectWs,
@@ -51,6 +51,16 @@ export default function App() {
     source_id: 'gs-ashburn',
     destination_id: 'gs-ashburn',
   })
+  const refreshTimer = useRef<number | null>(null)
+  const selectedJobIdRef = useRef<string | null>(null)
+  selectedJobIdRef.current = selectedJobId
+
+  const selectJob = useCallback((job: Job, plan?: Plan | null) => {
+    setSelectedJobId(job.id)
+    selectedJobIdRef.current = job.id
+    const nodeId = plan?.compute_node_id || job.assigned_node_id
+    if (nodeId) setSelectedId(nodeId)
+  }, [])
 
   const selectedPlan = useMemo(() => {
     if (!selectedJobId) return null
@@ -59,7 +69,7 @@ export default function App() {
     return plans[job.plan_id] || null
   }, [selectedJobId, jobs, plans])
 
-  const refresh = async () => {
+  const applySnapshot = useCallback(async () => {
     const snap = await api.snapshot()
     setNodes(snap.nodes)
     setStations(snap.stations)
@@ -70,18 +80,32 @@ export default function App() {
     setSettings(snap.settings)
     setReality(snap.reality)
     setMetrics(await api.metrics())
-    const recs = await api.orbitalRecords()
-    setOrbitalMeta(
-      recs.map((r) => `${r.name} (NORAD ${r.norad_id})`).join(' · '),
-    )
-  }
+    // Auto-select newest job if nothing selected (e.g. job created via API)
+    if (!selectedJobIdRef.current && snap.jobs.length > 0) {
+      const newest = [...snap.jobs].sort((a, b) => b.submitted_at - a.submitted_at)[0]
+      const plan = newest.plan_id
+        ? snap.plans.find((p) => p.id === newest.plan_id)
+        : undefined
+      selectJob(newest, plan || null)
+    }
+    return snap
+  }, [selectJob])
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current != null) window.clearTimeout(refreshTimer.current)
+    refreshTimer.current = window.setTimeout(() => {
+      applySnapshot().catch(() => undefined)
+    }, 150)
+  }, [applySnapshot])
 
   useEffect(() => {
     let ws: WebSocket | null = null
     let alive = true
     ;(async () => {
       try {
-        await refresh()
+        await applySnapshot()
+        const recs = await api.orbitalRecords()
+        setOrbitalMeta(recs.map((r) => `${r.name} (NORAD ${r.norad_id})`).join(' · '))
         setStatus('Live')
         ws = connectWs((ev) => {
           if (!alive) return
@@ -92,15 +116,42 @@ export default function App() {
               { lat: number; lon: number; alt_km: number }
             >
             const up = new Set(ev.payload.links_up as string[])
-            setSettings((s) => (s ? { ...s, t: ev.t, playing: s.playing } : s))
+            setSettings((s) => (s ? { ...s, t: ev.t } : s))
             setNodes((ns) =>
               ns.map((n) =>
                 positions[n.id] ? { ...n, position_lla: positions[n.id] } : n,
               ),
             )
             setLinks((ls) => ls.map((L) => ({ ...L, up: up.has(L.id) })))
-          } else if (ev.type === 'job_state' || ev.type === 'plan_created') {
-            refresh().catch(() => undefined)
+          } else if (ev.type === 'plan_created') {
+            const plan = ev.payload.plan as Plan
+            const jobId = (ev.payload.job_id as string) || plan?.job_id
+            if (plan) {
+              setPlans((prev) => ({ ...prev, [plan.id]: plan }))
+            }
+            if (jobId) {
+              setSelectedJobId(jobId)
+              selectedJobIdRef.current = jobId
+              if (plan?.compute_node_id) setSelectedId(plan.compute_node_id)
+            }
+            scheduleRefresh()
+          } else if (ev.type === 'job_state') {
+            const jobId = ev.payload.job_id as string
+            const state = ev.payload.state as Job['state']
+            setJobs((prev) => {
+              const i = prev.findIndex((j) => j.id === jobId)
+              if (i < 0) {
+                scheduleRefresh()
+                return prev
+              }
+              const next = prev.slice()
+              next[i] = { ...next[i], state }
+              return next
+            })
+            if (!selectedJobIdRef.current && jobId) {
+              setSelectedJobId(jobId)
+              selectedJobIdRef.current = jobId
+            }
           } else if (ev.type === 'transfer_progress') {
             const tr = ev.payload.transfer as Transfer
             setTransfers((prev) => {
@@ -115,6 +166,9 @@ export default function App() {
               setSettings((s) =>
                 s ? { ...s, playing: Boolean(ev.payload.playing) } : s,
               )
+            }
+            if (ev.payload.reset || ev.payload.seek) {
+              scheduleRefresh()
             }
             api.metrics().then(setMetrics).catch(() => undefined)
           } else if (ev.type === 'link_up' || ev.type === 'link_down') {
@@ -137,19 +191,38 @@ export default function App() {
       alive = false
       ws?.close()
       clearInterval(iv)
+      if (refreshTimer.current != null) window.clearTimeout(refreshTimer.current)
     }
-  }, [])
+  }, [applySnapshot, scheduleRefresh])
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true)
     try {
       await fn()
-      await refresh()
+      await applySnapshot()
+      const recs = await api.orbitalRecords()
+      setOrbitalMeta(recs.map((r) => `${r.name} (NORAD ${r.norad_id})`).join(' · '))
     } catch (e) {
       setStatus(`Error: ${(e as Error).message}`)
     } finally {
       setBusy(false)
     }
+  }
+
+  const play = () => {
+    setSettings((s) => (s ? { ...s, playing: true } : s))
+    api.play().catch((e) => setStatus(`Error: ${(e as Error).message}`))
+  }
+
+  const pause = () => {
+    setSettings((s) => (s ? { ...s, playing: false } : s))
+    api.pause().catch((e) => setStatus(`Error: ${(e as Error).message}`))
+  }
+
+  const stepOnce = () => {
+    api.step()
+      .then(() => applySnapshot())
+      .catch((e) => setStatus(`Error: ${(e as Error).message}`))
   }
 
   const submit = () =>
@@ -163,15 +236,14 @@ export default function App() {
         source_id: form.source_id,
         destination_id: form.destination_id,
       })
-      setSelectedJobId(res.job.id)
-      if (res.plan) setSelectedId(res.plan.compute_node_id)
+      selectJob(res.job, res.plan)
     })
 
   const thesis = (c: 'a' | 'b') =>
     run(async () => {
       const res = await api.runThesis(c)
-      setSelectedJobId(res.job.id)
-      if (res.plan) setSelectedId(res.plan.compute_node_id)
+      selectJob(res.job, res.plan)
+      setSettings((s) => (s ? { ...s, playing: true, t: res.sought_t ?? s.t } : s))
       await api.play()
     })
 
@@ -217,23 +289,44 @@ export default function App() {
           <section className="card controls">
             <h2>Simulation</h2>
             <div className="row">
-              <button className="primary" disabled={busy} onClick={() => run(() => api.play())}>
+              <button
+                type="button"
+                className={`primary ${settings?.playing ? 'active' : ''}`}
+                onClick={play}
+              >
                 Play
               </button>
-              <button disabled={busy} onClick={() => run(() => api.pause())}>
+              <button
+                type="button"
+                className={!settings?.playing ? 'active' : ''}
+                onClick={pause}
+              >
                 Pause
               </button>
-              <button disabled={busy} onClick={() => run(() => api.step())}>
+              <button type="button" onClick={stepOnce}>
                 Step
               </button>
-              <button className="danger" disabled={busy} onClick={() => run(() => api.reset())}>
+              <button
+                type="button"
+                className="danger"
+                disabled={busy}
+                onClick={() =>
+                  run(async () => {
+                    setSelectedJobId(null)
+                    selectedJobIdRef.current = null
+                    await api.reset()
+                  })
+                }
+              >
                 Reset
               </button>
             </div>
             <div className="stats-line">
               <span>t = {fmt(settings?.t, 0)} s</span>
               <span>step {settings?.sim_step_s ?? 5}s</span>
-              <span>{settings?.playing ? 'playing' : 'paused'}</span>
+              <span className={settings?.playing ? 'playing-pill' : ''}>
+                {settings?.playing ? 'playing' : 'paused'}
+              </span>
             </div>
             <label className="field">
               Speed
@@ -259,13 +352,19 @@ export default function App() {
               orbital wins.
             </p>
             <div className="row">
-              <button disabled={busy} onClick={() => thesis('a')}>
+              <button type="button" disabled={busy} onClick={() => thesis('a')}>
                 Case A — cheap loses
               </button>
-              <button className="primary" disabled={busy} onClick={() => thesis('b')}>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={() => thesis('b')}
+              >
                 Case B — cheap wins
               </button>
             </div>
+            {busy && <p className="muted small">Running preset…</p>}
           </section>
 
           <section className="card">
@@ -341,25 +440,25 @@ export default function App() {
             <h2>Jobs</h2>
             <div className="job-list">
               {jobs.length === 0 && <p className="muted small">No jobs yet.</p>}
-              {jobs.map((j) => (
-                <button
-                  key={j.id}
-                  className={`job-item ${selectedJobId === j.id ? 'active' : ''}`}
-                  onClick={() => {
-                    setSelectedJobId(j.id)
-                    if (j.assigned_node_id) setSelectedId(j.assigned_node_id)
-                  }}
-                >
-                  <div className="job-top">
-                    <strong>{j.id.slice(0, 14)}</strong>
-                    <span className={`state state-${j.state}`}>{j.state}</span>
-                  </div>
-                  <div className="muted small">
-                    {j.assigned_node_id || 'unassigned'} · {bytes(j.input_bytes)} in
-                    {j.preset ? ` · ${j.preset}` : ''}
-                  </div>
-                </button>
-              ))}
+              {[...jobs]
+                .sort((a, b) => b.submitted_at - a.submitted_at)
+                .map((j) => (
+                  <button
+                    type="button"
+                    key={j.id}
+                    className={`job-item ${selectedJobId === j.id ? 'active' : ''}`}
+                    onClick={() => selectJob(j, j.plan_id ? plans[j.plan_id] : null)}
+                  >
+                    <div className="job-top">
+                      <strong>{j.id.slice(0, 14)}</strong>
+                      <span className={`state state-${j.state}`}>{j.state}</span>
+                    </div>
+                    <div className="muted small">
+                      {j.assigned_node_id || 'unassigned'} · {bytes(j.input_bytes)} in
+                      {j.preset ? ` · ${j.preset}` : ''}
+                    </div>
+                  </button>
+                ))}
             </div>
           </section>
         </aside>

@@ -171,14 +171,25 @@ select {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  max-height: 220px;
+  max-height: 280px;
   overflow: auto;
 }
 
 .job-item {
   text-align: left;
   width: 100%;
-  padding: 0.5rem 0.55rem;
+  padding: 0.65rem 0.7rem;
+  min-height: 3.2rem;
+  cursor: pointer;
+}
+
+.job-item.active {
+  border-color: var(--accent);
+  background: rgba(62, 207, 142, 0.1);
+}
+
+.playing-pill {
+  color: var(--accent);
 }
 
 .job-top {
