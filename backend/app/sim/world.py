@@ -98,6 +98,16 @@ class SimWorld:
         if restore and self.store:
             self._restore()
 
+    def close(self) -> None:
+        if self.store:
+            try:
+                self.store.close()
+            except Exception:
+                pass
+            self.store = None
+        if self.instance:
+            self.instance.release()
+
     def _apply_topology(self, topo: dict[str, Any]) -> None:
         self.records: list[OrbitalRecord] = topo["records"]
         self.epoch: datetime = topo["epoch"]

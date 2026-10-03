@@ -26,4 +26,5 @@ def test_second_world_blocked_from_wal(tmp_path):
     ready = b.ready()
     assert ready["ok"] is False
     assert ready["error"] and "instance_lock" in ready["error"]
-    a.instance.release()
+    a.close()
+    b.close()
