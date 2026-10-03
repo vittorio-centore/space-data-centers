@@ -121,17 +121,19 @@ function Earth() {
 }
 
 function MarkerLabel({ text }: { text: string }) {
+  // Fixed screen-space size (no distanceFactor) so labels stay small and readable.
   return (
     <Html
-      distanceFactor={64}
       center
       pointerEvents="none"
       zIndexRange={[10, 0]}
-      style={{ pointerEvents: 'none', transform: 'translate3d(0,0,0)' }}
+      style={{
+        pointerEvents: 'none',
+        userSelect: 'none',
+        whiteSpace: 'nowrap',
+      }}
     >
-      <div className="globe-label" style={{ pointerEvents: 'none' }}>
-        {text}
-      </div>
+      <div className="globe-label">{text}</div>
     </Html>
   )
 }
