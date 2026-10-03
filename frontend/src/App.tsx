@@ -2,15 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   connectWs,
+  getTenantContext,
   type ComputeNode,
   type EvaluationReport,
   type GroundStation,
   type Job,
   type LinkConfig,
+  type MarketDayReport,
   type Plan,
   type PowerThermal,
   type ScenarioInfo,
   type Settings,
+  type TenantInfo,
   type Transfer,
 } from './api'
 import Globe from './components/Globe'
@@ -90,6 +93,12 @@ export default function App() {
   const [evalBusy, setEvalBusy] = useState(false)
   const [evalErr, setEvalErr] = useState<string | null>(null)
   const [powerThermal, setPowerThermal] = useState<PowerThermal | null>(null)
+  const [tenants, setTenants] = useState<TenantInfo[]>([])
+  const [tenantId, setTenantId] = useState<string>('')
+  const [platformReady, setPlatformReady] = useState(false)
+  const [marketBusy, setMarketBusy] = useState(false)
+  const [marketErr, setMarketErr] = useState<string | null>(null)
+  const [marketReport, setMarketReport] = useState<MarketDayReport | null>(null)
   const [form, setForm] = useState({
     input_mb: 5,
     output_mb: 1,
@@ -145,6 +154,100 @@ export default function App() {
   useEffect(() => {
     api.scenarios().then(setScenarios).catch(() => undefined)
   }, [])
+
+  const refreshTenants = useCallback(async () => {
+    try {
+      const list = await api.listTenants()
+      if (list == null) {
+        setPlatformReady(false)
+        return
+      }
+      setPlatformReady(true)
+      setTenants(list)
+      const ctx = getTenantContext()
+      if (ctx.tenantId && list.some((t) => t.id === ctx.tenantId)) {
+        setTenantId(ctx.tenantId)
+      }
+    } catch {
+      setPlatformReady(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void refreshTenants()
+  }, [refreshTenants])
+
+  const ensureDemoTenants = async () => {
+    if (busy || marketBusy) return
+    setBusy(true)
+    setMarketErr(null)
+    try {
+      const list = await api.ensureDemoTenants()
+      setTenants(list)
+      setPlatformReady(true)
+      if (!tenantId && list[0]) {
+        api.setActiveTenant(list[0].id)
+        setTenantId(list[0].id)
+      }
+      await applySnapshot()
+    } catch (e) {
+      setMarketErr(e instanceof Error ? e.message : 'Could not create demo tenants')
+      setPlatformReady(false)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const switchTenant = (id: string) => {
+    const next = id || null
+    api.setActiveTenant(next)
+    setTenantId(id)
+    setSelectedJobId(null)
+    selectedJobIdRef.current = null
+    void applySnapshot().catch(() => undefined)
+  }
+
+  const runMarketDay = async () => {
+    if (busy || marketBusy || evalBusy) return
+    setMarketBusy(true)
+    setMarketErr(null)
+    setBusy(true)
+    try {
+      if (!tenants.length) {
+        const list = await api.ensureDemoTenants()
+        setTenants(list)
+        setPlatformReady(true)
+      }
+      const report = await api.runMarketDay({
+        seed: 1,
+        scenario_id: settings?.scenario_id || 'mvp-thesis',
+      })
+      setMarketReport(report)
+      await applySnapshot()
+    } catch (e) {
+      setMarketErr(e instanceof Error ? e.message : 'Market day failed')
+    } finally {
+      setMarketBusy(false)
+      setBusy(false)
+    }
+  }
+
+  const marketMetrics = useMemo(() => {
+    if (!marketReport) return null
+    const rates = marketReport.deadline_hit_rate || {}
+    const fromRows = Object.fromEntries(
+      (marketReport.per_tenant || []).map((r) => [r.tenant_id, r.deadline_hit_rate]),
+    )
+    const hitA = rates.alpha ?? rates.A ?? fromRows.alpha ?? fromRows.A
+    const hitB = rates.beta ?? rates.B ?? fromRows.beta ?? fromRows.B
+    return {
+      hitA,
+      hitB,
+      stolen: marketReport.stolen_windows,
+      costAware: marketReport.cost_reservation_aware,
+      costGlobal: marketReport.cost_global_cheapest_ignores_tenants,
+    }
+  }, [marketReport])
 
   const selectedOrbital = useMemo(
     () => nodes.find((n) => n.id === selectedId && n.kind === 'orbital') || null,
@@ -828,6 +931,94 @@ export default function App() {
                   {scenarios.find((s) => s.id === settings?.scenario_id)?.description ||
                     'mvp-thesis for Case A/B; leo-constellation for a larger demo.'}
                 </p>
+
+                <label className="adv-label">
+                  Tenant
+                  <select
+                    value={tenantId}
+                    disabled={busy || marketBusy}
+                    onChange={(e) => switchTenant(e.target.value)}
+                  >
+                    <option value="">Default (open)</option>
+                    {(tenants.length
+                      ? tenants
+                      : [
+                          { id: 'alpha', name: 'Tenant A' },
+                          { id: 'beta', name: 'Tenant B' },
+                        ]
+                    ).map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name || t.id}
+                        {t.id === 'alpha' ? ' (A)' : t.id === 'beta' ? ' (B)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="muted adv-hint">
+                  Shared sky · hard reservations · per-tenant quotas. Keys{' '}
+                  <code className="inline-code">sdc-alpha</code> /{' '}
+                  <code className="inline-code">sdc-beta</code> when auth is on.
+                </p>
+                <div className="adv-row">
+                  <button
+                    type="button"
+                    disabled={busy || marketBusy}
+                    onClick={() => void ensureDemoTenants()}
+                  >
+                    Ensure tenants A/B
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || marketBusy || evalBusy}
+                    onClick={() => void runMarketDay()}
+                  >
+                    {marketBusy ? 'Market day…' : 'Run market day'}
+                  </button>
+                </div>
+                {marketErr && <p className="adv-err">{marketErr}</p>}
+                {!platformReady && !marketErr && (
+                  <p className="muted adv-hint">
+                    Platform routes load when the control-plane slice is merged.
+                  </p>
+                )}
+                {marketMetrics && (
+                  <div className="eval-report market-report">
+                    <p className="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.85rem' }}>
+                      Market day
+                      {marketReport?.seed != null ? ` · seed ${marketReport.seed}` : ''}
+                      {marketReport?.scenario_id ? ` · ${marketReport.scenario_id}` : ''}
+                    </p>
+                    <div className="market-metrics">
+                      <div>
+                        <span className="summary-label">On time A</span>
+                        <span className="summary-value">
+                          {marketMetrics.hitA == null
+                            ? '—'
+                            : `${fmt(marketMetrics.hitA * 100, 0)}%`}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="summary-label">On time B</span>
+                        <span className="summary-value">
+                          {marketMetrics.hitB == null
+                            ? '—'
+                            : `${fmt(marketMetrics.hitB * 100, 0)}%`}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="summary-label">Stolen windows</span>
+                        <span className="summary-value">{marketMetrics.stolen}</span>
+                      </div>
+                      <div>
+                        <span className="summary-label">Cost vs global cheapest</span>
+                        <span className="summary-value">
+                          ${fmt(marketMetrics.costAware, 3)} / $
+                          {fmt(marketMetrics.costGlobal, 3)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="adv-row">
                   <button type="button" disabled={busy || evalBusy} onClick={() => void runEval()}>

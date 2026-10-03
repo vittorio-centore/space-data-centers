@@ -500,6 +500,28 @@ select:focus {
   color: var(--muted);
 }
 
+.inline-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8em;
+}
+
+.market-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem 0.65rem;
+}
+
+.market-metrics > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.market-report .summary-value {
+  font-size: 0.88rem;
+}
+
 .empty {
   color: var(--muted);
   font-size: 0.92rem;

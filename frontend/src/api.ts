@@ -1,16 +1,50 @@
 const API = '/api'
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api-ws/ws`
 
+/** Active tenant context for platform control-plane calls (header X-Tenant-Id). */
+let activeTenantId: string | null = null
+let activeTenantKey: string | null = null
+
+export function getTenantContext(): { tenantId: string | null; apiKey: string | null } {
+  return { tenantId: activeTenantId, apiKey: activeTenantKey }
+}
+
+export function setTenantContext(tenantId: string | null, apiKey?: string | null) {
+  activeTenantId = tenantId
+  activeTenantKey = apiKey ?? (tenantId ? `sdc-${tenantId}` : null)
+}
+
+function tenantHeaders(): Record<string, string> {
+  const h: Record<string, string> = {}
+  if (activeTenantId) h['X-Tenant-Id'] = activeTenantId
+  if (activeTenantKey) h['X-API-Key'] = activeTenantKey
+  return h
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...tenantHeaders(),
+      ...(init?.headers || {}),
+    },
   })
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || res.statusText)
   }
   return res.json()
+}
+
+async function reqOptional<T>(path: string, init?: RequestInit): Promise<T | null> {
+  try {
+    return await req<T>(path, init)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : ''
+    if (msg.includes('404') || msg.includes('Not Found')) return null
+    throw e
+  }
 }
 
 export const api = {
@@ -70,6 +104,64 @@ export const api = {
       body: JSON.stringify(body ?? {}),
     }),
   listEvaluations: () => req<EvaluationReport[]>('/evaluations'),
+
+  /** Platform: list tenants (null if control-plane routes not mounted yet). */
+  listTenants: async () => {
+    const a = await reqOptional<TenantInfo[] | { tenants: TenantInfo[] }>('/tenants')
+    if (!a) return null
+    return Array.isArray(a) ? a : a.tenants || []
+  },
+
+  /** Seed demo tenants alpha / beta (plan names). */
+  ensureDemoTenants: async () => {
+    const seeded =
+      (await reqOptional<{ tenants: TenantInfo[] }>('/tenants/demo', { method: 'POST', body: '{}' })) ||
+      (await reqOptional<{ tenants: TenantInfo[] }>('/tenants/seed', {
+        method: 'POST',
+        body: JSON.stringify({ ids: ['alpha', 'beta'] }),
+      }))
+    if (seeded?.tenants) return seeded.tenants
+    // Fall back to create-one endpoints
+    const out: TenantInfo[] = []
+    for (const id of ['alpha', 'beta'] as const) {
+      const created =
+        (await reqOptional<TenantInfo>('/tenants', {
+          method: 'POST',
+          body: JSON.stringify({ id, name: id === 'alpha' ? 'Tenant A' : 'Tenant B' }),
+        })) ||
+        (await reqOptional<TenantInfo>(`/tenants/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ name: id === 'alpha' ? 'Tenant A' : 'Tenant B' }),
+        }))
+      if (created) out.push(created)
+      else out.push({ id, name: id === 'alpha' ? 'Tenant A' : 'Tenant B' })
+    }
+    return out
+  },
+
+  setActiveTenant: (tenantId: string | null) => {
+    setTenantContext(tenantId, tenantId ? `sdc-${tenantId}` : null)
+  },
+
+  runMarketDay: async (body?: { seed?: number; scenario_id?: string }) => {
+    const report =
+      (await reqOptional<MarketDayReport>('/market-day', {
+        method: 'POST',
+        body: JSON.stringify(body ?? { seed: 1, scenario_id: 'mvp-thesis' }),
+      })) ||
+      (await reqOptional<MarketDayReport>('/evaluations/market-day', {
+        method: 'POST',
+        body: JSON.stringify(body ?? { seed: 1, scenario_id: 'mvp-thesis' }),
+      })) ||
+      (await reqOptional<MarketDayReport>('/platform/market-day', {
+        method: 'POST',
+        body: JSON.stringify(body ?? { seed: 1, scenario_id: 'mvp-thesis' }),
+      }))
+    if (!report) {
+      throw new Error('Market day API not available yet (platform slice).')
+    }
+    return report
+  },
 }
 
 export function connectWs(onEvent: (ev: SimEvent) => void): WebSocket {
@@ -198,6 +290,27 @@ export interface EvaluationReport {
   seed: number
   created_t: number
   policies: EvaluationPolicyRow[]
+}
+
+export interface TenantInfo {
+  id: string
+  name?: string
+  api_key?: string | null
+  quota?: Record<string, number>
+}
+
+export interface MarketDayReport {
+  id?: string
+  scenario_id?: string
+  seed?: number
+  /** Per-tenant on-time rates (0–1). */
+  deadline_hit_rate?: Record<string, number>
+  per_tenant?: { tenant_id: string; deadline_hit_rate: number; mean_cost?: number }[]
+  stolen_windows: number
+  cost_reservation_aware: number
+  cost_global_cheapest_ignores_tenants: number
+  deadline_hit_rate_global_cheapest?: number
+  notes?: string
 }
 
 export interface Hop {
