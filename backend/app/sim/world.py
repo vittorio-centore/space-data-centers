@@ -584,7 +584,7 @@ class SimWorld:
                 continue
             up = link.up
             if not up:
-                if tr.state == TransferState.active:
+                if tr.state in (TransferState.active, TransferState.pending):
                     tr.state = TransferState.paused
                     await self.emit(
                         "transfer_progress",
