@@ -20,10 +20,12 @@ from app.models.types import (
     Job,
     LinkConfig,
     LinkKind,
+    LinkReservation,
     NodeKind,
     Plan,
     Reservation,
 )
+from app.orbit.contacts import earth_occludes
 from app.orbit.propagate import OrbitEngine, elevation_deg, geodetic_to_ecef, range_m
 
 OBJECTIVE_DOC = (
@@ -54,44 +56,100 @@ class PlacementPlanner:
         station_by_id: dict[str, GroundStation],
         link_by_id: dict[str, LinkConfig],
         reservations: list[Reservation],
-        link_reservations: dict[str, list[tuple[float, float, int]]],  # link -> [(t0,t1,bytes)]
+        link_reservations: dict[str, list[tuple[float, float, int]]] | list[LinkReservation],
         disrupted: dict[str, dict],
         sim_step_s: float,
         plan_horizon_s: float,
+        rate_factor_fn=None,
+        id_factory=None,
+        outages: Optional[dict] = None,
     ):
-        self.nodes = nodes
-        self.stations = stations
-        self.links = links
+        self.nodes = sorted(nodes, key=lambda n: n.id)
+        self.stations = sorted(stations, key=lambda s: s.id)
+        self.links = sorted(links, key=lambda L: L.id)
         self.orbit = orbit
         self.node_by_id = node_by_id
         self.station_by_id = station_by_id
         self.link_by_id = link_by_id
         self.reservations = reservations
-        self.link_reservations = link_reservations
+        self.link_reservations = self._norm_link_res(link_reservations)
         self.disrupted = disrupted
         self.sim_step_s = sim_step_s
         self.plan_horizon_s = plan_horizon_s
+        self.rate_factor_fn = rate_factor_fn
+        self.id_factory = id_factory
+        self.outages = outages or {}
         self.endpoints = set(node_by_id) | set(station_by_id)
 
-    def plan_job(self, job: Job, t_now: float) -> tuple[Optional[Plan], Optional[BaselineComparison], str]:
+    def _norm_link_res(self, raw) -> dict[str, list[tuple[float, float, int]]]:
+        if isinstance(raw, dict):
+            return raw
+        out: dict[str, list[tuple[float, float, int]]] = {}
+        for r in raw or []:
+            if isinstance(r, LinkReservation):
+                out.setdefault(r.link_id, []).append((r.start, r.end, r.bytes))
+            elif isinstance(r, dict):
+                out.setdefault(r["link_id"], []).append((r["start"], r["end"], r.get("bytes", 0)))
+        return out
+
+    def _new_plan_id(self) -> str:
+        if self.id_factory:
+            return self.id_factory("plan")
+        import uuid
+
+        return f"plan-{uuid.uuid4().hex[:10]}"
+
+    def _node_out(self, node_id: str, t: float) -> bool:
+        o = self.outages.get(node_id)
+        if not o:
+            return False
+        until = o.get("until") if isinstance(o, dict) else getattr(o, "until", None)
+        down = o.get("down", True) if isinstance(o, dict) else getattr(o, "down", True)
+        if not down:
+            return False
+        return until is None or t < float(until)
+
+    def plan_job(
+        self,
+        job: Job,
+        t_now: float,
+        policy: str = "planner",
+        forced_node_id: Optional[str] = None,
+    ) -> tuple[Optional[Plan], Optional[BaselineComparison], str]:
         candidates: list[Plan] = []
         errors: list[str] = []
-        for node in self.nodes:
+        nodes = self.nodes
+        if policy == "earth_only":
+            nodes = [n for n in self.nodes if n.kind == NodeKind.earth]
+        if forced_node_id:
+            nodes = [n for n in self.nodes if n.id == forced_node_id]
+        for node in nodes:
+            if self._node_out(node.id, t_now):
+                errors.append(f"{node.id}:outage")
+                continue
             plan = self._plan_for_node(job, node, t_now)
             if plan is None:
                 errors.append(f"{node.id}:infeasible")
             else:
+                plan.policy = policy
                 candidates.append(plan)
 
-        cheapest = min(self.nodes, key=lambda n: n.price_per_work)
-        baseline_plan = self._plan_for_node(job, cheapest, t_now)
+        cheapest = min(self.nodes, key=lambda n: (n.price_per_work, n.id))
+        baseline_plan = None if self._node_out(cheapest.id, t_now) else self._plan_for_node(job, cheapest, t_now)
 
         if not candidates:
-            # Still attach baseline info when possible
             baseline = self._baseline_cmp(None, baseline_plan, cheapest)
             return None, baseline, "; ".join(errors) or "no feasible plan"
 
-        chosen = self._select(candidates, job)
+        if policy == "cheapest":
+            chosen = next((p for p in candidates if p.compute_node_id == cheapest.id), None)
+            if chosen is None:
+                baseline = self._baseline_cmp(None, baseline_plan, cheapest)
+                return None, baseline, "cheapest node infeasible"
+        elif policy == "earliest":
+            chosen = min(candidates, key=lambda p: (p.estimated_completion, p.estimated_cost, p.compute_node_id))
+        else:
+            chosen = self._select(candidates, job)
         baseline = self._baseline_cmp(chosen, baseline_plan, cheapest)
         chosen.baseline_comparison = baseline
         return chosen, baseline, ""
@@ -100,8 +158,8 @@ class PlacementPlanner:
         if job.deadline_at is not None:
             feasible = [p for p in candidates if p.estimated_completion <= job.deadline_at]
             if feasible:
-                return min(feasible, key=lambda p: (p.estimated_cost, p.estimated_completion))
-        return min(candidates, key=lambda p: (p.estimated_completion, p.estimated_cost))
+                return min(feasible, key=lambda p: (p.estimated_cost, p.estimated_completion, p.compute_node_id))
+        return min(candidates, key=lambda p: (p.estimated_completion, p.estimated_cost, p.compute_node_id))
 
     def _baseline_cmp(
         self, chosen: Optional[Plan], baseline_plan: Optional[Plan], cheapest: ComputeNode
@@ -179,11 +237,10 @@ class PlacementPlanner:
         bc.reason_codes = reasons
 
     def _plan_for_node(self, job: Job, node: ComputeNode, t_now: float) -> Optional[Plan]:
-        exec_duration = job.work / node.compute_rate
-        # Optimistic filter
-        if job.deadline_at is not None and t_now + exec_duration > job.deadline_at:
-            # still might fail later; allow routing attempt if transfer could be fast
-            pass
+        factor = 1.0
+        if self.rate_factor_fn:
+            factor = max(1e-6, float(self.rate_factor_fn(node, t_now)))
+        exec_duration = job.work / (node.compute_rate * factor)
 
         input_route, input_arrival = self._earliest_delivery(
             job.source_id, node.id, job.input_bytes, t_now
@@ -200,14 +257,10 @@ class PlacementPlanner:
         if output_route is None:
             return None
 
-        if job.deadline_at is not None and output_arrival > job.deadline_at + 1e-6:
-            # Still return plan; selection filters by deadline preference
-            pass
-
         compute_cost = job.work * node.price_per_work
         transfer_cost = self._route_cost(input_route) + self._route_cost(output_route)
         return Plan(
-            id=f"plan-{uuid.uuid4().hex[:10]}",
+            id=self._new_plan_id(),
             job_id=job.id,
             compute_node_id=node.id,
             input_route=input_route,
@@ -218,6 +271,7 @@ class PlacementPlanner:
             estimated_completion=output_arrival,
             transfer_cost=transfer_cost,
             compute_cost=compute_cost,
+            rate_factor=factor,
         )
 
     def _node_available_at(self, node_id: str) -> float:
@@ -297,13 +351,14 @@ class PlacementPlanner:
                 if self._is_disrupted(w.link_id, max(t_arr, w.start)):
                     continue
                 start_tx = max(t_arr, w.start)
-                # Exclusive bandwidth; subtract reserved bytes overlapping window (approx)
                 bw = w.bandwidth_bps
                 if bw <= 0:
                     continue
-                # Available duration in this window from start_tx
-                avail_s = w.end - start_tx
                 need_s = (nbytes * 8) / bw
+                start_tx = self._wait_link_free(w.link_id, start_tx, need_s)
+                if start_tx is None:
+                    continue
+                avail_s = w.end - start_tx
                 if need_s > avail_s + 1e-9:
                     continue
                 arrive = start_tx + need_s
@@ -395,8 +450,25 @@ class PlacementPlanner:
             if ea is None or eb is None:
                 return False
             max_km = link.rules.get("max_range_km", 4000.0)
-            return range_m(ea, eb) <= max_km * 1000.0
+            if range_m(ea, eb) > max_km * 1000.0:
+                return False
+            return not earth_occludes(ea, eb)
         return False
+
+    def _wait_link_free(self, link_id: str, start_tx: float, need_s: float) -> Optional[float]:
+        reserved = sorted(self.link_reservations.get(link_id, []), key=lambda x: x[0])
+        t = start_tx
+        for _ in range(len(reserved) + 1):
+            end = t + need_s
+            blocked = False
+            for r0, r1, _b in reserved:
+                if t < r1 and end > r0:
+                    t = r1
+                    blocked = True
+                    break
+            if not blocked:
+                return t
+        return None
 
     def _gs_and_orb(self, link: LinkConfig) -> tuple[Optional[str], Optional[str]]:
         a, b = link.endpoint_a, link.endpoint_b
@@ -471,6 +543,10 @@ class PlacementPlanner:
                 baseline_comparison=plan.baseline_comparison,
                 transfer_cost=transfer_cost,
                 compute_cost=compute_cost,
+                revision=plan.revision + 1,
+                parent_plan_id=plan.id,
+                policy=plan.policy,
+                rate_factor=plan.rate_factor,
             )
         else:
             route, arrival = self._earliest_delivery(
@@ -492,4 +568,8 @@ class PlacementPlanner:
                 baseline_comparison=plan.baseline_comparison,
                 transfer_cost=transfer_cost,
                 compute_cost=plan.compute_cost,
+                revision=plan.revision + 1,
+                parent_plan_id=plan.id,
+                policy=plan.policy,
+                rate_factor=plan.rate_factor,
             )

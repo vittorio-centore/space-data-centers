@@ -101,8 +101,18 @@ class OrbitEngine:
         self.records = {r.id: r for r in records}
         self.epoch_utc = epoch_utc
         self._sats: dict[str, Satrec] = {}
+        self._ecef_cache: dict[tuple[str, int], Optional[tuple[float, float, float]]] = {}
+        self._cache_step = 5.0
         for r in records:
             self._sats[r.id] = Satrec.twoline2rv(r.tle_line1, r.tle_line2)
+
+    def set_cache_step(self, step_s: float) -> None:
+        if abs(step_s - self._cache_step) > 1e-12:
+            self._ecef_cache.clear()
+        self._cache_step = max(0.5, float(step_s))
+
+    def clear_cache(self) -> None:
+        self._ecef_cache.clear()
 
     def datetime_at(self, t_s: float) -> datetime:
         from datetime import timedelta
@@ -121,10 +131,17 @@ class OrbitEngine:
         return float(r[0]), float(r[1]), float(r[2])
 
     def position_ecef_m(self, record_id: str, t_s: float) -> Optional[tuple[float, float, float]]:
-        eci = self.position_eci_km(record_id, t_s)
+        q = int(round(t_s / self._cache_step))
+        key = (record_id, q)
+        if key in self._ecef_cache:
+            return self._ecef_cache[key]
+        eci = self.position_eci_km(record_id, q * self._cache_step)
         if eci is None:
+            self._ecef_cache[key] = None
             return None
-        return eci_to_ecef(eci[0], eci[1], eci[2], self.datetime_at(t_s))
+        ecef = eci_to_ecef(eci[0], eci[1], eci[2], self.datetime_at(q * self._cache_step))
+        self._ecef_cache[key] = ecef
+        return ecef
 
     def position_lla(self, record_id: str, t_s: float) -> Optional[dict[str, float]]:
         ecef = self.position_ecef_m(record_id, t_s)

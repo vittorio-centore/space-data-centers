@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch-or-use-cached TLEs for MVP orbital nodes.
-
-Default: refresh the three NORAD IDs used by the sim from CelesTrak groups,
-falling back to the in-repo cache on network failure.
-"""
+"""Fetch-or-use-cached TLEs for MVP and constellation scenarios."""
 
 from __future__ import annotations
 
@@ -14,17 +10,33 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "data" / "tles" / "leo_compute.tle"
+CONST = ROOT / "data" / "tles" / "leo_constellation.tle"
 
-# NORAD IDs documented in README
 WANTED = {
     "25544": "ISS (ZARYA)",
     "48274": "CSS (TIANHE)",
     "43013": "NOAA 20 (JPSS-1)",
 }
 
+EXTRA = {
+    "20580": "HST",
+    "25994": "TERRA",
+    "27424": "AQUA",
+    "39084": "LANDSAT 8",
+    "40697": "SENTINEL-2A",
+    "41335": "SENTINEL-3A",
+    "37849": "SUOMI NPP",
+    "43013": "NOAA 20",
+    "33591": "NOAA 19",
+    "28654": "NOAA 18",
+    "38771": "METOP-B",
+}
+
 URLS = [
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
     "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+    "https://celestrak.org/NORAD/elements/gp.php?GROUP=resource&FORMAT=tle",
+    "https://celestrak.org/NORAD/elements/gp.php?GROUP=science&FORMAT=tle",
 ]
 
 
@@ -43,6 +55,25 @@ def parse(text: str) -> dict[str, tuple[str, str, str]]:
     return out
 
 
+def write_set(path: Path, wanted: dict[str, str], found: dict[str, tuple[str, str, str]]) -> int:
+    lines: list[str] = []
+    missing = 0
+    for norad, label in wanted.items():
+        if norad not in found:
+            print(f"missing {norad} ({label})", file=sys.stderr)
+            missing += 1
+            continue
+        name, l1, l2 = found[norad]
+        lines.extend([name, l1, l2])
+        print(f"OK {norad} {name}")
+    if not lines:
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+    print(f"wrote {path}")
+    return 0 if missing == 0 else 0
+
+
 def main() -> int:
     found: dict[str, tuple[str, str, str]] = {}
     try:
@@ -51,21 +82,11 @@ def main() -> int:
             resp.raise_for_status()
             found.update(parse(resp.text))
     except Exception as e:
-        print(f"fetch failed ({e}); keeping cache at {CACHE}", file=sys.stderr)
+        print(f"fetch failed ({e}); keeping caches", file=sys.stderr)
         return 0 if CACHE.exists() else 1
 
-    lines: list[str] = []
-    for norad, label in WANTED.items():
-        if norad not in found:
-            print(f"missing {norad} ({label})", file=sys.stderr)
-            return 1
-        name, l1, l2 = found[norad]
-        lines.extend([name, l1, l2])
-        print(f"OK {norad} {name}")
-
-    CACHE.parent.mkdir(parents=True, exist_ok=True)
-    CACHE.write_text("\n".join(lines) + "\n")
-    print(f"wrote {CACHE}")
+    write_set(CACHE, WANTED, found)
+    write_set(CONST, EXTRA, found)
     return 0
 
 

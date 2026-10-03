@@ -66,13 +66,16 @@ class ComputeNode(BaseModel):
     compute_rate: float  # work units / s (sim)
     price_per_work: float  # dollars per work unit (simulated)
     available_at: float = 0.0
+    slots: int = 1
     position_eci_m: Optional[list[float]] = None
     position_lla: Optional[dict[str, float]] = None
+    power_thermal: Optional[dict[str, Any]] = None
     reality_flags: dict[str, str] = Field(
         default_factory=lambda: {
             "compute_rate": "simulated",
             "price_per_work": "simulated",
             "position": "derived_from_real_tle" if True else "configured",
+            "power_thermal": "labelled_assumption_not_telemetry",
         }
     )
 
@@ -134,6 +137,11 @@ class Plan(BaseModel):
     baseline_comparison: Optional[BaselineComparison] = None
     transfer_cost: float = 0.0
     compute_cost: float = 0.0
+    revision: int = 1
+    parent_plan_id: Optional[str] = None
+    migrated_from_node_id: Optional[str] = None
+    policy: str = "planner"
+    rate_factor: float = 1.0
 
 
 class Job(BaseModel):
@@ -156,6 +164,9 @@ class Job(BaseModel):
     worker_error: Optional[str] = None
     preset: Optional[str] = None
     data_location_id: Optional[str] = None
+    policy: str = "planner"
+    scenario_id: Optional[str] = None
+    seq: int = 0
 
 
 class Transfer(BaseModel):
@@ -176,6 +187,7 @@ class Event(BaseModel):
     t: float
     type: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    seq: int = 0
 
 
 class Settings(BaseModel):
@@ -186,6 +198,10 @@ class Settings(BaseModel):
     speed: float = 1.0  # wall-clock multiplier for tick scheduling
     t: float = 0.0
     disrupted_links: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    scenario_id: str = "mvp-thesis"
+    headless: bool = False
+    persist: bool = True
+    tick_errors: int = 0
 
 
 class WorkerStatus(BaseModel):
@@ -200,6 +216,42 @@ class Reservation(BaseModel):
     node_id: str
     start: float
     end: float
+
+
+class LinkReservation(BaseModel):
+    job_id: str
+    link_id: str
+    start: float
+    end: float
+    bytes: int = 0
+
+
+class NodeOutage(BaseModel):
+    node_id: str
+    until: Optional[float] = None
+    reason: str = "injected"
+    down: bool = True
+
+
+class EvaluationPolicyRow(BaseModel):
+    policy: str
+    n_jobs: int
+    deadline_hit_rate: float
+    mean_cost: float
+    mean_completion: float
+    mean_compute_wait_s: float
+    completion_prediction_mae: float
+    cost_prediction_mae: float
+    n_failed: int
+
+
+class EvaluationReport(BaseModel):
+    id: str
+    scenario_id: str
+    seed: int
+    created_t: float
+    policies: list[EvaluationPolicyRow]
+    job_template: dict[str, Any] = Field(default_factory=dict)
 
 
 # Objective constants (documented per spec Appendix A)

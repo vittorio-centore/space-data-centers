@@ -2,16 +2,18 @@
 
 Job-placement planner for Earth and orbital data centers. Submit a batch job; the planner picks a compute node and store-and-forward routes using **real SGP4 contact windows** from public TLEs, then the sim animates transfers while a **real image-resize worker** runs. The dashboard compares the chosen plan to a cheapest-node baseline — including thesis Case A/B where cheap orbital loses when the next contact is too late, and wins under different phasing.
 
+The planner is **deterministic**: same scenario, inputs, and seed produce the same plan.
+
 ## Stack
 
 | Layer | Tech |
 | --- | --- |
 | Frontend | React + TypeScript (Vite), Three.js globe |
-| Backend | Python + FastAPI, WebSocket `/ws` |
+| Backend | Python + FastAPI, `/api/v1` + legacy root aliases, WebSocket `/ws` |
 | Orbit | SGP4 from cached CelesTrak TLEs (`backend/data/tles/`) |
-| Workers | Local asyncio subprocess — image batch resize |
+| Workers | Local asyncio subprocess — image batch resize (skipped when `SDC_HEADLESS=1`) |
 | Assistant | Grok Ask + xAI Voice (optional `XAI_API_KEY`); offline parser if unset |
-| State | In-memory (reset clears all) |
+| State | SQLite WAL (`backend/data/sdc.sqlite`) with in-memory fallback when `SDC_PERSIST=0` |
 
 ## Satellite choices (real TLEs)
 
@@ -21,8 +23,7 @@ Job-placement planner for Earth and orbital data centers. Submit a batch job; th
 | `orbital-css` | **48274** | CSS (TIANHE) | Mid-price orbital |
 | `orbital-noaa` | **43013** | NOAA 20 (JPSS-1) | Polar LEO orbital |
 
-Ground stations (configured): **Ashburn, VA (CONUS)** and **Madrid (EU)**.  
-Earth compute: **US-East Terrestrial DC** (always-on terrestrial links to both gateways).
+Ground stations (mvp-thesis): **Ashburn, VA** and **Madrid**. Scenario `leo-constellation` adds Svalbard, Singapore, Santiago, Perth, a second Earth DC, and more TLE-bound nodes.
 
 Refresh TLEs (optional; cache works offline):
 
@@ -35,18 +36,18 @@ cd backend && python3 scripts/fetch_tles.py
 Ports: frontend **43123**, backend **43124**.
 
 ```bash
-# Backend
 cd backend
 python3 -m pip install -r requirements.txt
 PYTHONPATH=. python3 -m uvicorn app.main:app --host 0.0.0.0 --port 43124
 
-# Frontend (separate terminal)
 cd frontend
 npm install
 npm run dev -- --host 0.0.0.0 --port 43123
 ```
 
-Open [http://127.0.0.1:43123](http://127.0.0.1:43123).
+- API docs: [http://127.0.0.1:43124/docs](http://127.0.0.1:43124/docs)
+- Isolated operator page: [http://127.0.0.1:43124/operator/](http://127.0.0.1:43124/operator/)
+- Dashboard: [http://127.0.0.1:43123](http://127.0.0.1:43123)
 
 ### Grok Ask + xAI Voice
 
@@ -67,28 +68,36 @@ cd backend && PYTHONPATH=. python3 -m pytest tests/test_assistant_intents.py tes
 
 ### Thesis demos
 
-Use the dashboard buttons **Case A — cheap loses** / **Case B — cheap wins**, or:
-
 ```bash
-curl -X POST http://127.0.0.1:43124/presets/thesis/a
-curl -X POST http://127.0.0.1:43124/presets/thesis/b
+curl -X POST http://127.0.0.1:43124/api/v1/presets/thesis/a
+curl -X POST http://127.0.0.1:43124/api/v1/presets/thesis/b
 ```
 
-- **Case A:** seeks to just after an ISS–Ashburn pass with a tight deadline; planner picks Earth because the cheapest orbital’s next useful contact (any GS) is too late (`baseline_misses_deadline`).
-- **Case B:** seeks to ~60s before a pass; planner selects `orbital-iss-cheap` and beats/equals baseline on cost while meeting the deadline.
+Legacy unversioned paths (`/health`, `/jobs`, …) remain for the current frontend proxy.
+
+### Tests
+
+```bash
+cd backend && PYTHONPATH=. python3 -m pytest -q
+```
+
+### Env
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SDC_DB_PATH` | `backend/data/sdc.sqlite` | SQLite file |
+| `SDC_PERSIST` | `1` | Write-through persistence |
+| `SDC_HEADLESS` | `0` | Skip real workers (eval/tests) |
+| `SDC_SCENARIO` | `mvp-thesis` | `mvp-thesis` or `leo-constellation` |
 
 ## Reality boundary
 
-| Real / derived | Simulated |
+| Real / derived | Simulated / labelled |
 | --- | --- |
 | TLE ephemeris, SGP4 positions | Compute FLOPS / queues / prices |
-| Contact windows (elevation/range) | Link bandwidth & bit pricing |
-| Configured GS lat/lon | ISL presence (range rule) |
+| Contact windows (elevation/range/ISL occlusion) | Link bandwidth & bit pricing |
+| Configured GS lat/lon | Power/thermal (assumption-labelled, not telemetry) |
 
 ## Units
 
 Seconds, meters, bytes, bit/s (bandwidth), dollars.
-
-## Out of scope (MVP)
-
-Power/thermal, job migration, distributed split jobs, durable DB, Jev.

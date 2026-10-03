@@ -13,3 +13,7 @@ frontend/dist/
 *.log
 .tmp/
 tmp/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+backend/data/sdc.sqlite*

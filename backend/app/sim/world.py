@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import sys
 import tempfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from app.config import AppConfig, load_config
+from app.ids import IdSeq
 from app.models.types import (
     ComputeNode,
     Event,
@@ -20,6 +22,7 @@ from app.models.types import (
     JobState,
     LinkConfig,
     LinkKind,
+    LinkReservation,
     NodeKind,
     OrbitalRecord,
     Plan,
@@ -30,9 +33,14 @@ from app.models.types import (
     TransferState,
     WorkerStatus,
 )
+from app.orbit.contacts import earth_occludes
 from app.orbit.propagate import OrbitEngine, elevation_deg, geodetic_to_ecef, range_m
+from app.persist.store import SqliteStore
+from app.physics.power_thermal import PowerThermalModel
 from app.planner.placement import PlacementPlanner
-from app.topology import build_topology
+from app.scenarios.catalog import build_scenario
+
+log = logging.getLogger("sdc.sim")
 
 EventCallback = Callable[[Event], Awaitable[None]]
 
@@ -40,34 +48,30 @@ WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "workers" / "image_batc
 
 
 class SimWorld:
-    def __init__(self):
-        topo = build_topology()
-        self.records: list[OrbitalRecord] = topo["records"]
-        self.epoch: datetime = topo["epoch"]
-        self.nodes: list[ComputeNode] = topo["nodes"]
-        self.stations: list[GroundStation] = topo["stations"]
-        self.links: list[LinkConfig] = topo["links"]
-        self.orbit: OrbitEngine = topo["orbit_engine"]
-
-        self.node_by_id = {n.id: n for n in self.nodes}
-        self.station_by_id = {s.id: s for s in self.stations}
-        self.link_by_id = {L.id: L for L in self.links}
-        self.record_by_id = {r.id: r for r in self.records}
-
-        self.settings = Settings(
-            sim_step_s=5.0,
-            plan_horizon_s=7200.0,
-            epoch_utc=self.epoch.isoformat().replace("+00:00", "Z"),
-            playing=False,
-            speed=10.0,
-            t=0.0,
-            disrupted_links={},
-        )
+    def __init__(self, config: Optional[AppConfig] = None, restore: bool = True):
+        self.config = config or load_config()
+        self.ids = IdSeq()
+        self.power = PowerThermalModel()
+        self.store: Optional[SqliteStore] = None
+        if self.config.persist:
+            self.store = SqliteStore(self.config.db_path)
+        self.node_outages: dict[str, dict[str, Any]] = {}
+        self.plan_revisions: list[Plan] = []
+        self.evaluations: dict[str, dict[str, Any]] = {}
+        self.ready_error: Optional[str] = None
+        try:
+            self._apply_topology(build_scenario(self.config.scenario))
+        except Exception as e:
+            self.ready_error = f"topology: {e}"
+            raise
+        self.settings.headless = self.config.headless
+        self.settings.persist = self.config.persist
+        self.settings.scenario_id = self.config.scenario
         self.jobs: dict[str, Job] = {}
         self.plans: dict[str, Plan] = {}
         self.transfers: dict[str, Transfer] = {}
         self.reservations: list[Reservation] = []
-        self.link_reservations: dict[str, list[tuple[float, float, int]]] = {}
+        self.link_reservations: list[LinkReservation] = []
         self.events: list[Event] = []
         self._event_subs: list[asyncio.Queue] = []
         self._tick_task: Optional[asyncio.Task] = None
@@ -78,8 +82,55 @@ class SimWorld:
         self._worker_procs: dict[str, asyncio.subprocess.Process] = {}
         self._worker_meta: dict[str, dict[str, Any]] = {}
         self._worker_tasks: dict[str, asyncio.Task] = {}
-        self._prev_link_up: dict[str, bool] = {L.id: L.up for L in self.links}
         self._update_positions_and_links()
+        self._refresh_power(mutate=False)
+        if restore and self.store:
+            self._restore()
+
+    def _apply_topology(self, topo: dict[str, Any]) -> None:
+        self.records: list[OrbitalRecord] = topo["records"]
+        self.epoch: datetime = topo["epoch"]
+        self.nodes: list[ComputeNode] = topo["nodes"]
+        self.stations: list[GroundStation] = topo["stations"]
+        self.links: list[LinkConfig] = topo["links"]
+        self.orbit: OrbitEngine = topo["orbit_engine"]
+        self.node_by_id = {n.id: n for n in self.nodes}
+        self.station_by_id = {s.id: s for s in self.stations}
+        self.link_by_id = {L.id: L for L in self.links}
+        self.record_by_id = {r.id: r for r in self.records}
+        self.settings = Settings(
+            sim_step_s=5.0,
+            plan_horizon_s=7200.0,
+            epoch_utc=self.epoch.isoformat().replace("+00:00", "Z"),
+            playing=False,
+            speed=10.0,
+            t=0.0,
+            disrupted_links={},
+            scenario_id=topo.get("scenario_id", "mvp-thesis"),
+            headless=self.config.headless,
+            persist=self.config.persist,
+        )
+        self.orbit.set_cache_step(self.settings.sim_step_s)
+        self._prev_link_up: dict[str, bool] = {L.id: L.up for L in self.links}
+
+    def ready(self) -> dict[str, Any]:
+        ok = self.ready_error is None and bool(self.records) and bool(self.nodes)
+        db_ok = True
+        if self.store:
+            try:
+                self.store.set_meta("heartbeat", self.settings.t)
+            except Exception as e:
+                db_ok = False
+                ok = False
+                self.ready_error = f"db: {e}"
+        return {
+            "ok": ok and db_ok,
+            "t": self.settings.t,
+            "scenario": self.settings.scenario_id,
+            "records": len(self.records),
+            "persist": bool(self.store),
+            "error": self.ready_error,
+        }
 
     # ── subscriptions ──────────────────────────────────────────────
     def subscribe(self) -> asyncio.Queue:
@@ -91,16 +142,25 @@ class SimWorld:
         if q in self._event_subs:
             self._event_subs.remove(q)
 
+    def events_since(self, seq: int) -> list[Event]:
+        return [e for e in self.events if e.seq > seq]
+
     async def emit(self, type_: str, payload: dict[str, Any] | None = None) -> Event:
         ev = Event(
-            id=f"ev-{uuid.uuid4().hex[:12]}",
+            id=self.ids.next("ev"),
             t=self.settings.t,
             type=type_,
             payload=payload or {},
+            seq=self.ids.peek(),
         )
         self.events.append(ev)
         if len(self.events) > 5000:
             self.events = self.events[-4000:]
+        if self.store:
+            try:
+                self.store.put_event(ev.model_dump())
+            except Exception:
+                log.exception("persist event")
         for q in list(self._event_subs):
             try:
                 q.put_nowait(ev)
@@ -168,7 +228,9 @@ class SimWorld:
             if ea is None or eb is None:
                 return False
             max_km = float(link.rules.get("max_range_km", 4000))
-            return range_m(ea, eb) <= max_km * 1000
+            if range_m(ea, eb) > max_km * 1000:
+                return False
+            return not earth_occludes(ea, eb)
         return False
 
     def effective_bandwidth(self, link: LinkConfig) -> float:
@@ -195,14 +257,41 @@ class SimWorld:
                 # note: emit is async; collect sync markers — caller emits
                 emitted.append(
                     Event(
-                        id=f"ev-{uuid.uuid4().hex[:12]}",
+                        id=self.ids.next("ev"),
                         t=t,
                         type="link_up" if up else "link_down",
                         payload={"link_id": L.id, "a": L.endpoint_a, "b": L.endpoint_b},
+                        seq=self.ids.peek(),
                     )
                 )
             self._prev_link_up[L.id] = up
         return emitted
+
+    def _rate_factor(self, node: ComputeNode, t: float) -> float:
+        if node.kind == NodeKind.earth:
+            return 1.0
+        ecef = None
+        if node.orbital_record_id:
+            ecef = self.orbit.position_ecef_m(node.orbital_record_id, t)
+        return self.power.predict_factor(node.id, ecef, self.orbit.datetime_at(t))
+
+    def _refresh_power(self, mutate: bool = True) -> None:
+        t = self.settings.t
+        computing = {j.assigned_node_id for j in self.jobs.values() if j.state == JobState.running}
+        for n in self.nodes:
+            if n.kind == NodeKind.earth:
+                n.power_thermal = self.power.snapshot_earth().model_dump()
+            else:
+                ecef = self.orbit.position_ecef_m(n.orbital_record_id, t) if n.orbital_record_id else None
+                st = self.power.factor_orbital(
+                    n.id,
+                    ecef,
+                    self.orbit.datetime_at(t),
+                    computing=n.id in computing,
+                    dt_s=self.settings.sim_step_s,
+                    mutate=mutate,
+                )
+                n.power_thermal = st.model_dump()
 
     def _planner(self) -> PlacementPlanner:
         return PlacementPlanner(
@@ -218,13 +307,92 @@ class SimWorld:
             disrupted=self.settings.disrupted_links,
             sim_step_s=self.settings.sim_step_s,
             plan_horizon_s=self.settings.plan_horizon_s,
+            rate_factor_fn=self._rate_factor,
+            id_factory=self.ids.next,
+            outages=self.node_outages,
         )
+
+    def _persist_job(self, job: Job) -> None:
+        if self.store:
+            self.store.put_job(job.model_dump())
+
+    def _persist_plan(self, plan: Plan) -> None:
+        if self.store:
+            self.store.put_plan(plan.model_dump())
+            self.store.add_revision(plan.model_dump())
+
+    def _persist_reservations(self) -> None:
+        if self.store:
+            self.store.replace_reservations(
+                [r.model_dump() for r in self.reservations],
+                [r.model_dump() for r in self.link_reservations],
+            )
+
+    def _apply_reservations(self, job: Job, plan: Plan) -> None:
+        self.reservations = [r for r in self.reservations if r.job_id != job.id]
+        self.link_reservations = [r for r in self.link_reservations if r.job_id != job.id]
+        self.reservations.append(
+            Reservation(
+                job_id=job.id,
+                node_id=plan.compute_node_id,
+                start=plan.compute_start,
+                end=plan.compute_end,
+            )
+        )
+        for hop in list(plan.input_route) + list(plan.output_route):
+            if hop.link_id:
+                self.link_reservations.append(
+                    LinkReservation(
+                        job_id=job.id,
+                        link_id=hop.link_id,
+                        start=hop.window_start,
+                        end=hop.window_end,
+                        bytes=hop.bytes,
+                    )
+                )
+        self.node_by_id[plan.compute_node_id].available_at = max(
+            self.node_by_id[plan.compute_node_id].available_at, plan.compute_end
+        )
+        self._persist_reservations()
+
+    def _restore(self) -> None:
+        assert self.store
+        data = self.store.load_all()
+        meta = data.get("meta") or {}
+        if "t" in meta:
+            self.settings.t = float(meta["t"])
+        if "disrupted" in meta:
+            self.settings.disrupted_links = meta["disrupted"]
+        if "id_seq" in meta:
+            self.ids.n = int(meta["id_seq"])
+        self.node_outages = data.get("outages") or {}
+        for j in data.get("jobs") or []:
+            job = Job.model_validate(j)
+            self.jobs[job.id] = job
+        for p in data.get("plans") or []:
+            plan = Plan.model_validate(p)
+            self.plans[plan.id] = plan
+        for tr in data.get("transfers") or []:
+            t = Transfer.model_validate(tr)
+            self.transfers[t.id] = t
+        self.reservations = [Reservation.model_validate(r) for r in data.get("reservations") or []]
+        self.link_reservations = [LinkReservation.model_validate(r) for r in data.get("link_reservations") or []]
+        self.events = [Event.model_validate(e) for e in (data.get("events") or [])][-4000:]
+        for ev in data.get("evaluations") or []:
+            self.evaluations[ev["id"]] = ev
+        self.plan_revisions = [Plan.model_validate(p) for p in data.get("revisions") or []]
+        self._update_positions_and_links()
+        self._refresh_power(mutate=False)
 
     # ── public API ops ─────────────────────────────────────────────
     async def submit_job(self, body: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
+            return await self._submit_job_unlocked(body)
+
+    async def _submit_job_unlocked(self, body: dict[str, Any]) -> dict[str, Any]:
+            policy = str(body.get("policy") or "planner")
             job = Job(
-                id=f"job-{uuid.uuid4().hex[:10]}",
+                id=self.ids.next("job"),
                 submitted_at=self.settings.t,
                 input_bytes=int(body.get("input_bytes", 5_000_000)),
                 output_bytes=int(body.get("output_bytes", 1_000_000)),
@@ -235,6 +403,8 @@ class SimWorld:
                 state=JobState.submitted,
                 preset=body.get("preset"),
                 data_location_id=body.get("source_id", "gs-ashburn"),
+                policy=policy,
+                scenario_id=self.settings.scenario_id,
             )
             if job.deadline_at is not None:
                 job.deadline_at = float(job.deadline_at)
@@ -243,10 +413,13 @@ class SimWorld:
             await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
 
             planner = self._planner()
-            plan, baseline, err = planner.plan_job(job, self.settings.t)
+            plan, baseline, err = planner.plan_job(
+                job, self.settings.t, policy=policy, forced_node_id=body.get("forced_node_id")
+            )
             if plan is None:
                 job.state = JobState.failed
                 job.fail_reason = err or "placement failed"
+                self._persist_job(job)
                 await self.emit(
                     "job_state",
                     {"job_id": job.id, "state": job.state.value, "reason": job.fail_reason},
@@ -261,27 +434,19 @@ class SimWorld:
             planner.enrich_reasons(plan, job)
             plan.job_id = job.id
             self.plans[plan.id] = plan
+            self.plan_revisions.append(plan)
             job.plan_id = plan.id
             job.assigned_node_id = plan.compute_node_id
             job.state = JobState.planned
-            self.reservations.append(
-                Reservation(
-                    job_id=job.id,
-                    node_id=plan.compute_node_id,
-                    start=plan.compute_start,
-                    end=plan.compute_end,
-                )
-            )
-            self.node_by_id[plan.compute_node_id].available_at = max(
-                self.node_by_id[plan.compute_node_id].available_at, plan.compute_end
-            )
+            self._apply_reservations(job, plan)
+            self._persist_job(job)
+            self._persist_plan(plan)
             await self.emit(
                 "plan_created",
                 {"job_id": job.id, "plan": plan.model_dump()},
             )
             await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
 
-            # Start input transfer
             await self._begin_input(job, plan)
             return {
                 "job": job.model_dump(),
@@ -291,6 +456,21 @@ class SimWorld:
                 else None,
             }
 
+    async def submit_batch(self, jobs: list[dict[str, Any]], policy: str = "planner") -> list[dict[str, Any]]:
+        """Plan jobs earliest-deadline-first (sequential greedy)."""
+        def key(b: dict[str, Any]):
+            d = b.get("deadline_at")
+            return (float(d) if d is not None else 1e18, float(b.get("work", 0)))
+
+        ordered = sorted(jobs, key=key)
+        out = []
+        async with self._lock:
+            for body in ordered:
+                body = dict(body)
+                body.setdefault("policy", policy)
+                out.append(await self._submit_job_unlocked(body))
+        return out
+
     async def _begin_input(self, job: Job, plan: Plan) -> None:
         if not plan.input_route:
             job.state = JobState.queued
@@ -299,7 +479,7 @@ class SimWorld:
             return
         hop = plan.input_route[0]
         tr = Transfer(
-            id=f"xfer-{uuid.uuid4().hex[:10]}",
+            id=self.ids.next("xfer"),
             job_id=job.id,
             direction=TransferDirection.input,
             from_id=hop.from_id,
@@ -311,6 +491,8 @@ class SimWorld:
             hop_index=0,
         )
         self.transfers[tr.id] = tr
+        if self.store:
+            self.store.put_transfer(tr.model_dump())
         job.state = JobState.input_transfer
         await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
         await self.emit(
@@ -335,7 +517,7 @@ class SimWorld:
             return
         hop = plan.output_route[0]
         tr = Transfer(
-            id=f"xfer-{uuid.uuid4().hex[:10]}",
+            id=self.ids.next("xfer"),
             job_id=job.id,
             direction=TransferDirection.output,
             from_id=hop.from_id,
@@ -370,8 +552,14 @@ class SimWorld:
                     pass
 
         await self._progress_transfers(step)
+        await self._maybe_recover()
         await self._progress_compute()
         await self._poll_workers()
+        self._refresh_power(mutate=True)
+        if self.store:
+            self.store.set_meta("t", self.settings.t)
+            self.store.set_meta("disrupted", self.settings.disrupted_links)
+            self.store.set_meta("id_seq", self.ids.n)
         await self.emit(
             "tick",
             {
@@ -428,6 +616,8 @@ class SimWorld:
             if tr.bytes_sent >= tr.bytes_total:
                 tr.state = TransferState.completed
                 job.data_location_id = tr.to_id
+                if self.store:
+                    self.store.put_transfer(tr.model_dump())
                 await self.emit("transfer_progress", {"transfer": tr.model_dump()})
                 await self._advance_route(job, tr)
 
@@ -440,7 +630,7 @@ class SimWorld:
         if next_i < len(route):
             hop = route[next_i]
             new_tr = Transfer(
-                id=f"xfer-{uuid.uuid4().hex[:10]}",
+                id=self.ids.next("xfer"),
                 job_id=job.id,
                 direction=tr.direction,
                 from_id=hop.from_id,
@@ -522,6 +712,10 @@ class SimWorld:
         if job.worker_started:
             return
         job.worker_started = True
+        if self.settings.headless or self.config.headless:
+            job.worker_done = True
+            await self.emit("worker_complete", {"job_id": job.id, "headless": True})
+            return
         wid = "worker-local-1"
         if self.workers[wid].state == "busy":
             wid = f"worker-{job.id}"
@@ -596,7 +790,19 @@ class SimWorld:
     async def _play_loop(self) -> None:
         try:
             while self.settings.playing:
-                await self.step()
+                try:
+                    await self.step()
+                    self.settings.tick_errors = 0
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.settings.tick_errors += 1
+                    log.exception("tick failed")
+                    await self.emit("sim_error", {"error": str(e), "count": self.settings.tick_errors})
+                    if self.settings.tick_errors >= self.config.tick_fail_pause:
+                        self.settings.playing = False
+                        await self.emit("metric", {"playing": False, "auto_paused": True})
+                        break
                 if not self.settings.playing:
                     break
                 delay = max(0.01, self.settings.sim_step_s / max(self.settings.speed, 0.1))
@@ -618,6 +824,9 @@ class SimWorld:
 
     async def reset(self) -> None:
         async with self._lock:
+            await self._reset_unlocked()
+
+    async def _reset_unlocked(self) -> None:
             self.settings.playing = False
             tick = self._tick_task
             self._tick_task = None
@@ -639,14 +848,25 @@ class SimWorld:
             self.reservations.clear()
             self.link_reservations.clear()
             self.events.clear()
+            self.plan_revisions.clear()
+            self.node_outages.clear()
+            self.ids = IdSeq()
+            self.power.reset()
             self.settings.t = 0.0
+            self.settings.tick_errors = 0
             self.settings.disrupted_links.clear()
             for n in self.nodes:
                 n.available_at = 0.0
             for w in self.workers.values():
                 w.state = "idle"
                 w.job_id = None
+            if self.store:
+                self.store.clear_runtime()
+                self.store.set_meta("t", 0.0)
+                self.store.set_meta("id_seq", 0)
+            self.orbit.clear_cache()
             self._update_positions_and_links()
+            self._refresh_power(mutate=False)
             await self.emit("metric", {"reset": True, "t": 0.0})
 
     async def cancel_job(self, job_id: str) -> Job:
@@ -681,44 +901,93 @@ class SimWorld:
     def clear_disruption(self, link_id: str) -> None:
         self.settings.disrupted_links.pop(link_id, None)
 
-    async def try_replan(self, job_id: str) -> dict:
-        async with self._lock:
-            job = self.jobs[job_id]
+    def _node_is_out(self, node_id: str, t: Optional[float] = None) -> bool:
+        t = self.settings.t if t is None else t
+        o = self.node_outages.get(node_id)
+        if not o:
+            return False
+        until = o.get("until")
+        return until is None or t < float(until)
+
+    def set_outage(self, node_id: str, down: bool = True, until: Optional[float] = None, reason: str = "injected") -> dict:
+        if down:
+            self.node_outages[node_id] = {"node_id": node_id, "until": until, "reason": reason, "down": True}
+            if self.store:
+                self.store.put_outage(node_id, self.node_outages[node_id])
+        else:
+            self.node_outages.pop(node_id, None)
+            if self.store:
+                self.store.delete_outage(node_id)
+        return {"node_id": node_id, "outage": self.node_outages.get(node_id)}
+
+    def _route_still_feasible(self, job: Job, plan: Plan) -> bool:
+        planner = self._planner()
+        data_at = job.data_location_id or job.source_id
+        if job.state in (JobState.input_transfer, JobState.planned):
+            route, _arr = planner._earliest_delivery(data_at, plan.compute_node_id, job.input_bytes, self.settings.t)
+            return route is not None
+        if job.state == JobState.output_transfer:
+            route, _arr = planner._earliest_delivery(data_at, job.destination_id, job.output_bytes, self.settings.t)
+            return route is not None
+        return True
+
+    async def _maybe_recover(self) -> None:
+        for job in list(self.jobs.values()):
+            if job.state in (JobState.completed, JobState.failed, JobState.canceled, JobState.submitted):
+                continue
+            plan = self.plans.get(job.plan_id or "")
+            if not plan:
+                continue
+            node_down = bool(job.assigned_node_id and self._node_is_out(job.assigned_node_id))
+            paused = any(
+                tr.job_id == job.id and tr.state == TransferState.paused for tr in self.transfers.values()
+            )
+            need = node_down or (paused and not self._route_still_feasible(job, plan))
+            if not need:
+                continue
+            await self._recover_job(job, allow_migrate=True)
+
+    async def _recover_job(self, job: Job, allow_migrate: bool) -> dict:
+        plan = self.plans.get(job.plan_id or "")
+        if not plan:
+            return {"ok": False, "error": "no plan"}
+        node_down = bool(job.assigned_node_id and self._node_is_out(job.assigned_node_id))
+        pre_compute = job.state in (JobState.planned, JobState.input_transfer, JobState.queued)
+        if node_down and job.state == JobState.running:
+            # Safe restart from source: image batch is idempotent
+            return await self._migrate_job(job, from_source=True, reason="node_outage_mid_run")
+        if node_down and pre_compute and allow_migrate:
+            # Try route replan first only if node still usable — it is not
+            return await self._migrate_job(job, from_source=job.state != JobState.queued, reason="node_outage")
+        if job.state not in (JobState.input_transfer, JobState.output_transfer, JobState.planned):
+            if allow_migrate and pre_compute:
+                return await self._migrate_job(job, from_source=True, reason="infeasible_pre_compute")
+            return {"ok": False, "error": f"cannot recover in {job.state}"}
+        return await self._replan_routes_unlocked(job)
+
+    async def _replan_routes_unlocked(self, job: Job) -> dict:
             plan = self.plans.get(job.plan_id or "")
             if not plan or not job.assigned_node_id:
                 return {"ok": False, "error": "no plan"}
             phase = "input" if job.state in (JobState.input_transfer, JobState.planned) else "output"
-            if job.state not in (
-                JobState.input_transfer,
-                JobState.output_transfer,
-                JobState.planned,
-            ):
-                return {"ok": False, "error": f"cannot replan in state {job.state}"}
             data_at = job.data_location_id or job.source_id
             planner = self._planner()
             new_plan = planner.replan_routes(job, plan, data_at, phase, self.settings.t)
             if new_plan is None:
+                if job.state in (JobState.planned, JobState.input_transfer, JobState.queued):
+                    return await self._migrate_job(job, from_source=True, reason="route_infeasible")
                 job.state = JobState.failed
                 job.fail_reason = "replan infeasible; assigned node fixed"
-                await self.emit(
-                    "replan",
-                    {"job_id": job.id, "ok": False, "reason": job.fail_reason},
-                )
+                self._persist_job(job)
+                await self.emit("replan", {"job_id": job.id, "ok": False, "reason": job.fail_reason})
                 await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
                 return {"ok": False, "error": job.fail_reason}
             self.plans[new_plan.id] = new_plan
-            # refresh reservations for this job
-            self.reservations = [r for r in self.reservations if r.job_id != job.id]
-            self.reservations.append(
-                Reservation(
-                    job_id=job.id,
-                    node_id=new_plan.compute_node_id,
-                    start=new_plan.compute_start,
-                    end=new_plan.compute_end,
-                )
-            )
+            self.plan_revisions.append(new_plan)
+            self._apply_reservations(job, new_plan)
+            self._persist_plan(new_plan)
+            self._persist_job(job)
             await self.emit("replan", {"job_id": job.id, "ok": True, "plan": new_plan.model_dump()})
-            # restart current phase transfer from data_at
             for tr in list(self.transfers.values()):
                 if tr.job_id == job.id and tr.state not in (TransferState.completed,):
                     tr.state = TransferState.failed
@@ -727,6 +996,73 @@ class SimWorld:
             else:
                 await self._begin_output(job, new_plan)
             return {"ok": True, "plan": new_plan.model_dump()}
+
+    async def _migrate_job(self, job: Job, from_source: bool, reason: str) -> dict:
+        old_node = job.assigned_node_id
+        if from_source:
+            job.data_location_id = job.source_id
+        planner = self._planner()
+        # Do not use the downed node
+        plan, _b, err = planner.plan_job(job, self.settings.t, policy="planner")
+        if plan is None or plan.compute_node_id == old_node and self._node_is_out(old_node or ""):
+            job.state = JobState.failed
+            job.fail_reason = f"migration failed: {err or 'no alternate node'}"
+            self._persist_job(job)
+            await self.emit("migrated", {"job_id": job.id, "ok": False, "reason": job.fail_reason})
+            await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+            return {"ok": False, "error": job.fail_reason}
+        plan.parent_plan_id = job.plan_id
+        plan.migrated_from_node_id = old_node
+        plan.revision = (self.plans.get(job.plan_id or "") or plan).revision + 1
+        job.assigned_node_id = plan.compute_node_id
+        job.plan_id = plan.id
+        job.worker_started = False
+        job.worker_done = False
+        job.worker_error = None
+        self.plans[plan.id] = plan
+        self.plan_revisions.append(plan)
+        self._apply_reservations(job, plan)
+        self._persist_plan(plan)
+        self._persist_job(job)
+        await self.emit(
+            "migrated",
+            {
+                "job_id": job.id,
+                "from": old_node,
+                "to": plan.compute_node_id,
+                "reason": reason,
+                "plan": plan.model_dump(),
+            },
+        )
+        for tr in list(self.transfers.values()):
+            if tr.job_id == job.id and tr.state not in (TransferState.completed,):
+                tr.state = TransferState.failed
+        await self._begin_input(job, plan)
+        return {"ok": True, "plan": plan.model_dump(), "migrated": True}
+
+    async def try_replan(self, job_id: str) -> dict:
+        async with self._lock:
+            job = self.jobs[job_id]
+            return await self._recover_job(job, allow_migrate=True)
+
+    async def load_scenario(self, name: str) -> dict[str, Any]:
+        async with self._lock:
+            await self._reset_unlocked()
+            topo = build_scenario(name)
+            self._apply_topology(topo)
+            self.config.scenario = name
+            self.settings.scenario_id = name
+            self._update_positions_and_links()
+            self._refresh_power(mutate=False)
+            if self.store:
+                self.store.set_meta("scenario", name)
+            await self.emit("metric", {"scenario": name})
+            return {
+                "scenario": name,
+                "nodes": [n.id for n in self.nodes],
+                "stations": [s.id for s in self.stations],
+                "links": len(self.links),
+            }
 
     def snapshot(self) -> dict[str, Any]:
         return {

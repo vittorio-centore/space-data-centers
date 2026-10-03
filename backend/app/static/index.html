@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SDC operator</title>
+  <style>
+    :root { font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; color: #1c2430; background: #f4f1ea; }
+    body { max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; font-weight: 600; }
+    button, select { border: 1px solid #c5c0b5; background: #fff; border-radius: 8px; padding: 0.4rem 0.7rem; }
+    pre { background: #fff; border: 1px solid #ddd6c8; border-radius: 10px; padding: 0.8rem; overflow: auto; font-size: 0.8rem; }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
+    p { color: #4a5560; }
+  </style>
+</head>
+<body>
+  <h1>Space Data Centers — operator</h1>
+  <p>Isolated backend page. Canonical API is <code>/api/v1</code>. Dashboard globe is unchanged.</p>
+  <div class="row">
+    <button id="health">Health / ready</button>
+    <button id="thesisA">Thesis A</button>
+    <button id="thesisB">Thesis B</button>
+    <button id="eval">Run evaluation</button>
+    <select id="scenario">
+      <option value="mvp-thesis">mvp-thesis</option>
+      <option value="leo-constellation">leo-constellation</option>
+    </select>
+    <button id="load">Load scenario</button>
+  </div>
+  <pre id="out">Ready.</pre>
+  <script>
+    const out = document.getElementById("out");
+    async function show(path, init) {
+      const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
+      const text = await res.text();
+      try { out.textContent = JSON.stringify(JSON.parse(text), null, 2); }
+      catch { out.textContent = text; }
+    }
+    document.getElementById("health").onclick = () =>
+      show("/api/v1/ready");
+    document.getElementById("thesisA").onclick = () =>
+      show("/api/v1/presets/thesis/a", { method: "POST" });
+    document.getElementById("thesisB").onclick = () =>
+      show("/api/v1/presets/thesis/b", { method: "POST" });
+    document.getElementById("eval").onclick = () =>
+      show("/api/v1/evaluations", { method: "POST", body: JSON.stringify({ seed: 1, n_jobs: 4, max_steps: 800 }) });
+    document.getElementById("load").onclick = () =>
+      show("/api/v1/scenarios", { method: "POST", body: JSON.stringify({ id: document.getElementById("scenario").value }) });
+  </script>
+</body>
+</html>
