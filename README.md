@@ -50,7 +50,13 @@ npm run dev -- --host 0.0.0.0 --port 43123
 - API docs: [http://127.0.0.1:43124/docs](http://127.0.0.1:43124/docs)
 - Inspector contact matrix: `GET /api/v1/contacts` (same sim-step grid the planner uses)
 - Isolated operator page: [http://127.0.0.1:43124/operator/](http://127.0.0.1:43124/operator/) (includes **Market day**)
-- Dashboard: [http://127.0.0.1:43123](http://127.0.0.1:43123)
+- Dashboard: [http://127.0.0.1:43123](http://127.0.0.1:43123) — **Shared sky** panel shows tenant A/B, quota remaining, who booked ISS/windows, and market-day hit rates / stolen windows / cost vs global cheapest
+
+Demo tenant keys (optional; open as `local` when unset):
+
+```bash
+export SDC_TENANT_KEYS=sdc-local:local,sdc-alpha:alpha,sdc-beta:beta
+```
 
 ### Market-day replay
 

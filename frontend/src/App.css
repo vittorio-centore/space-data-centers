@@ -522,6 +522,94 @@ select:focus {
   font-size: 0.88rem;
 }
 
+.sky-section .adv-hint {
+  margin-top: 0;
+}
+
+.quota-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0.55rem 0 0.7rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.quota-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.booking-block {
+  margin: 0 0 0.65rem;
+}
+
+.booking-head {
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.booking-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.booking-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  align-items: baseline;
+  font-size: 0.88rem;
+}
+
+.booking-resource {
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.booking-window {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tenant-mark {
+  display: inline-block;
+  min-width: 1.35rem;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.05rem 0.28rem;
+  background: #fff;
+  vertical-align: middle;
+}
+
+.tenant-mark.tenant-alpha {
+  color: #2f5f7a;
+  border-color: rgba(47, 95, 122, 0.28);
+  background: rgba(47, 95, 122, 0.06);
+}
+
+.tenant-mark.tenant-beta {
+  color: #6a4f2f;
+  border-color: rgba(106, 79, 47, 0.28);
+  background: rgba(106, 79, 47, 0.06);
+}
+
 .empty {
   color: var(--muted);
   font-size: 0.92rem;

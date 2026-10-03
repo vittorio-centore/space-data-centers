@@ -11,6 +11,8 @@ import {
   type MarketDayReport,
   type Plan,
   type PowerThermal,
+  type QuotaSnapshot,
+  type Reservation,
   type ScenarioInfo,
   type Settings,
   type TenantInfo,
@@ -18,7 +20,15 @@ import {
 } from './api'
 import Globe from './components/Globe'
 import AskPanel from './assistant/AskPanel'
-import { deriveMarketMetrics, etaSeconds, jobSubmitBody, jobTransferProgress } from './jobUi'
+import {
+  deriveBookings,
+  deriveMarketMetrics,
+  etaSeconds,
+  jobSubmitBody,
+  jobTransferProgress,
+  quotaRemaining,
+  tenantShort,
+} from './jobUi'
 import './App.css'
 
 function fmt(n: number | null | undefined, d = 1) {
@@ -65,11 +75,14 @@ export default function App() {
   const [evalErr, setEvalErr] = useState<string | null>(null)
   const [powerThermal, setPowerThermal] = useState<PowerThermal | null>(null)
   const [tenants, setTenants] = useState<TenantInfo[]>([])
-  const [tenantId, setTenantId] = useState<string>('')
+  const [tenantId, setTenantId] = useState<string>('local')
   const [platformReady, setPlatformReady] = useState(false)
   const [marketBusy, setMarketBusy] = useState(false)
   const [marketErr, setMarketErr] = useState<string | null>(null)
   const [marketReport, setMarketReport] = useState<MarketDayReport | null>(null)
+  const [reservations, setReservations] = useState<Reservation[]>([])
+  const [quotas, setQuotas] = useState<Record<string, QuotaSnapshot>>({})
+  const [stolenLive, setStolenLive] = useState(0)
   const [form, setForm] = useState({
     input_mb: 5,
     output_mb: 1,
@@ -105,6 +118,9 @@ export default function App() {
     setPlans(Object.fromEntries(snap.plans.map((p) => [p.id, p])))
     setTransfers(snap.transfers)
     setSettings(snap.settings)
+    setReservations(snap.reservations || [])
+    setQuotas(snap.quotas || {})
+    setStolenLive(snap.stolen_windows ?? 0)
     if (!selectedJobIdRef.current && snap.jobs.length > 0) {
       const newest = [...snap.jobs].sort((a, b) => b.submitted_at - a.submitted_at)[0]
       const plan = newest.plan_id
@@ -123,6 +139,8 @@ export default function App() {
   }, [applySnapshot])
 
   useEffect(() => {
+    api.setActiveTenant('local')
+    setTenantId('local')
     api.scenarios().then(setScenarios).catch(() => undefined)
   }, [])
 
@@ -135,9 +153,19 @@ export default function App() {
       }
       setPlatformReady(true)
       setTenants(list)
+      const fromList: Record<string, QuotaSnapshot> = {}
+      for (const t of list) {
+        if (t.quota) fromList[t.id] = t.quota
+      }
+      if (Object.keys(fromList).length) {
+        setQuotas((prev) => ({ ...prev, ...fromList }))
+      }
       const ctx = getTenantContext()
       if (ctx.tenantId && list.some((t) => t.id === ctx.tenantId)) {
         setTenantId(ctx.tenantId)
+      } else if (!ctx.tenantId) {
+        api.setActiveTenant('local')
+        setTenantId('local')
       }
     } catch {
       setPlatformReady(false)
@@ -171,10 +199,12 @@ export default function App() {
 
   const switchTenant = (id: string) => {
     api.setActiveTenant(id || 'local')
-    setTenantId(id)
+    setTenantId(id || 'local')
     setSelectedJobId(null)
     selectedJobIdRef.current = null
-    void applySnapshot().catch(() => undefined)
+    void applySnapshot()
+      .then(() => refreshTenants())
+      .catch(() => undefined)
   }
 
   const runMarketDay = async () => {
@@ -191,6 +221,7 @@ export default function App() {
       const report = await api.runMarketDay({ seed: 11, n_per_tenant: 3, max_steps: 2000 })
       setMarketReport(report)
       await applySnapshot()
+      await refreshTenants()
     } catch (e) {
       setMarketErr(e instanceof Error ? e.message : 'Market day failed')
     } finally {
@@ -200,6 +231,15 @@ export default function App() {
   }
 
   const marketMetrics = useMemo(() => deriveMarketMetrics(marketReport), [marketReport])
+  const planList = useMemo(() => Object.values(plans), [plans])
+  const bookings = useMemo(
+    () => deriveBookings(reservations, planList, settings?.t ?? 0, 8),
+    [reservations, planList, settings?.t],
+  )
+  const activeQuota = useMemo(() => {
+    const tid = tenantId || 'local'
+    return quotaRemaining(quotas[tid] || tenants.find((t) => t.id === tid)?.quota || null)
+  }, [quotas, tenants, tenantId])
 
   const selectedOrbital = useMemo(
     () => nodes.find((n) => n.id === selectedId && n.kind === 'orbital') || null,
@@ -328,6 +368,7 @@ export default function App() {
     try {
       await fn()
       await applySnapshot()
+      await refreshTenants()
       const recs = await api.orbitalRecords()
       setOrbitalMeta(recs.map((r) => `${r.name} (${r.norad_id})`).join(', '))
     } finally {
@@ -454,8 +495,8 @@ export default function App() {
         <div>
           <div className="brand">Space Data Centers</div>
           <p className="caption">
-            Place a batch job on Earth or orbital compute. Orbits use real TLEs; prices and
-            bandwidth are simulated.
+            Two companies, one sky — place batch jobs on Earth or orbital compute. Orbits use
+            real TLEs; prices and bandwidth are simulated.
           </p>
         </div>
         <div className="top-right">
@@ -606,7 +647,7 @@ export default function App() {
               disabled={busy}
               onClick={submit}
             >
-              Submit
+              Submit as {tenantShort(tenantId)}
             </button>
 
             <button
@@ -638,6 +679,145 @@ export default function App() {
                   Case B: cheap wins
                 </button>
               </div>
+            )}
+          </section>
+
+          <section className="section sky-section" data-testid="shared-sky">
+            <h2>Shared sky</h2>
+            <p className="muted adv-hint">
+              Hard reservations on ISS and contact windows. Tenant A and B share the same orbit
+              clock — whoever booked a slot keeps it.
+            </p>
+            <label className="adv-label">
+              Acting as
+              <select
+                data-testid="tenant-select"
+                value={tenantId || 'local'}
+                disabled={busy || marketBusy}
+                onChange={(e) => switchTenant(e.target.value)}
+              >
+                {(tenants.length
+                  ? tenants
+                  : [
+                      { id: 'local', display_name: 'Local default' },
+                      { id: 'alpha', display_name: 'Tenant A' },
+                      { id: 'beta', display_name: 'Tenant B' },
+                    ]
+                ).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.id === 'alpha'
+                      ? 'Tenant A'
+                      : t.id === 'beta'
+                        ? 'Tenant B'
+                        : t.display_name || t.name || t.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {activeQuota && (
+              <div className="quota-row" data-testid="quota-remaining" aria-label="Quota remaining">
+                <div>
+                  <span className="summary-label">Jobs left</span>
+                  <span className="summary-value">
+                    {activeQuota.jobsLeft}
+                    <span className="summary-of">/{activeQuota.jobsCap}</span>
+                  </span>
+                </div>
+                <div>
+                  <span className="summary-label">Reserved time left</span>
+                  <span className="summary-value">
+                    {fmt(activeQuota.reservedLeft, 0)} s
+                    <span className="summary-of">/{fmt(activeQuota.reservedCap, 0)}</span>
+                  </span>
+                </div>
+                <div>
+                  <span className="summary-label">In use</span>
+                  <span className="summary-value">{fmt(activeQuota.reservedUsed, 1)} s</span>
+                </div>
+              </div>
+            )}
+            <div className="booking-block">
+              <p className="booking-head">Who booked</p>
+              {bookings.length === 0 ? (
+                <p className="muted adv-hint">No active reservations yet.</p>
+              ) : (
+                <ul className="booking-list" data-testid="booking-list">
+                  {bookings.map((b) => (
+                    <li key={b.key}>
+                      <span className={`tenant-mark tenant-${b.tenantId}`}>
+                        {tenantShort(b.tenantId)}
+                      </span>
+                      <span className="booking-resource">{b.resource}</span>
+                      <span className="booking-window muted">
+                        {fmt(b.start, 0)}–{fmt(b.end, 0)} s
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="adv-row">
+              <button
+                type="button"
+                disabled={busy || marketBusy}
+                onClick={() => void ensureDemoTenants()}
+              >
+                Refresh tenants
+              </button>
+              <button
+                type="button"
+                data-testid="run-market-day"
+                disabled={busy || marketBusy || evalBusy}
+                onClick={() => void runMarketDay()}
+              >
+                {marketBusy ? 'Market day…' : 'Run market day'}
+              </button>
+            </div>
+            {marketErr && <p className="adv-err">{marketErr}</p>}
+            {!platformReady && !marketErr && (
+              <p className="muted adv-hint">Loading tenant list…</p>
+            )}
+            {marketMetrics ? (
+              <div className="eval-report market-report" data-testid="market-report">
+                <p className="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.85rem' }}>
+                  Market day
+                  {marketReport?.seed != null ? ` · seed ${marketReport.seed}` : ''}
+                  {marketReport?.scenario_id ? ` · ${marketReport.scenario_id}` : ''}
+                </p>
+                <div className="market-metrics">
+                  <div>
+                    <span className="summary-label">On time A</span>
+                    <span className="summary-value">
+                      {marketMetrics.hitA == null
+                        ? '—'
+                        : `${fmt(marketMetrics.hitA * 100, 0)}%`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="summary-label">On time B</span>
+                    <span className="summary-value">
+                      {marketMetrics.hitB == null
+                        ? '—'
+                        : `${fmt(marketMetrics.hitB * 100, 0)}%`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="summary-label">Stolen windows</span>
+                    <span className="summary-value">{marketMetrics.stolen}</span>
+                  </div>
+                  <div>
+                    <span className="summary-label">Cost vs global cheapest</span>
+                    <span className="summary-value">
+                      ${fmt(marketMetrics.costAware, 3)} / $
+                      {fmt(marketMetrics.costGlobal, 3)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="muted adv-hint" data-testid="stolen-live">
+                Live stolen windows: {stolenLive}
+              </p>
             )}
           </section>
 
@@ -680,7 +860,12 @@ export default function App() {
                     onClick={() => selectJob(j, j.plan_id ? plans[j.plan_id] : null)}
                   >
                     <div className="job-top">
-                      <span>{j.id.slice(0, 12)}</span>
+                      <span>
+                        <span className={`tenant-mark tenant-${j.tenant_id || 'local'}`}>
+                          {tenantShort(j.tenant_id)}
+                        </span>{' '}
+                        {j.id.slice(0, 12)}
+                      </span>
                       <span className={`state state-${j.state}`}>
                         {STAGE_LABEL[j.state] || j.state}
                       </span>
@@ -886,93 +1071,11 @@ export default function App() {
                     'mvp-thesis for Case A/B; leo-constellation for a larger demo.'}
                 </p>
 
-                <label className="adv-label">
-                  Tenant
-                  <select
-                    data-testid="tenant-select"
-                    value={tenantId || 'local'}
-                    disabled={busy || marketBusy}
-                    onChange={(e) => switchTenant(e.target.value)}
-                  >
-                    {(tenants.length
-                      ? tenants
-                      : [
-                          { id: 'local', display_name: 'Local default' },
-                          { id: 'alpha', display_name: 'Tenant A' },
-                          { id: 'beta', display_name: 'Tenant B' },
-                        ]
-                    ).map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.display_name || t.name || t.id}
-                        {t.id === 'alpha' ? ' (A)' : t.id === 'beta' ? ' (B)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <p className="muted adv-hint">
-                  Shared sky · hard reservations · per-tenant quotas. Demo keys{' '}
-                  <code className="inline-code">sdc-alpha</code> /{' '}
+                  Tenant A/B, quotas, bookings, and market day live in Shared sky above. Demo
+                  keys <code className="inline-code">sdc-alpha</code> /{' '}
                   <code className="inline-code">sdc-beta</code>.
                 </p>
-                <div className="adv-row">
-                  <button
-                    type="button"
-                    disabled={busy || marketBusy}
-                    onClick={() => void ensureDemoTenants()}
-                  >
-                    Refresh tenants A/B
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="run-market-day"
-                    disabled={busy || marketBusy || evalBusy}
-                    onClick={() => void runMarketDay()}
-                  >
-                    {marketBusy ? 'Market day…' : 'Run market day'}
-                  </button>
-                </div>
-                {marketErr && <p className="adv-err">{marketErr}</p>}
-                {!platformReady && !marketErr && (
-                  <p className="muted adv-hint">Loading tenant list…</p>
-                )}
-                {marketMetrics && (
-                  <div className="eval-report market-report" data-testid="market-report">
-                    <p className="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.85rem' }}>
-                      Market day
-                      {marketReport?.seed != null ? ` · seed ${marketReport.seed}` : ''}
-                      {marketReport?.scenario_id ? ` · ${marketReport.scenario_id}` : ''}
-                    </p>
-                    <div className="market-metrics">
-                      <div>
-                        <span className="summary-label">On time A</span>
-                        <span className="summary-value">
-                          {marketMetrics.hitA == null
-                            ? '—'
-                            : `${fmt(marketMetrics.hitA * 100, 0)}%`}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="summary-label">On time B</span>
-                        <span className="summary-value">
-                          {marketMetrics.hitB == null
-                            ? '—'
-                            : `${fmt(marketMetrics.hitB * 100, 0)}%`}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="summary-label">Stolen windows</span>
-                        <span className="summary-value">{marketMetrics.stolen}</span>
-                      </div>
-                      <div>
-                        <span className="summary-label">Cost vs global cheapest</span>
-                        <span className="summary-value">
-                          ${fmt(marketMetrics.costAware, 3)} / $
-                          {fmt(marketMetrics.costGlobal, 3)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                )}
 
                 <div className="adv-row">
                   <button type="button" disabled={busy || evalBusy} onClick={() => void runEval()}>
