@@ -89,11 +89,33 @@
 }
 
 .globe-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
   padding: 0.55rem 0.9rem;
   font-size: 0.82rem;
   color: var(--muted);
   background: var(--bg-elev);
   border-top: 1px solid var(--line);
+}
+
+.globe-foot-links {
+  display: flex;
+  gap: 0.65rem;
+  flex-shrink: 0;
+}
+
+.globe-foot-links a,
+.adv-links a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.globe-foot-links a:hover,
+.adv-links a:hover {
+  color: var(--ink);
 }
 
 .side {
@@ -376,6 +398,106 @@ select:focus {
 .advanced select {
   width: 100%;
   margin-bottom: 0.45rem;
+}
+
+.adv-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.adv-hint {
+  margin: 0.35rem 0 0.65rem;
+  font-size: 0.82rem;
+}
+
+.adv-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+}
+
+.adv-err {
+  margin: 0.35rem 0;
+  font-size: 0.85rem;
+  color: var(--danger);
+}
+
+.adv-links {
+  margin: 0.7rem 0 0;
+  font-size: 0.85rem;
+}
+
+.eval-report {
+  margin: 0.45rem 0 0.2rem;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  overflow: auto;
+}
+
+.eval-report table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.eval-report th,
+.eval-report td {
+  text-align: left;
+  padding: 0.2rem 0.35rem 0.2rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.eval-report th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.eval-report tr:last-child td {
+  border-bottom: none;
+}
+
+.power-block {
+  margin: 0.65rem 0 0.35rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.power-head {
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.power-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.75rem;
+  font-size: 0.88rem;
+}
+
+.power-dl dt {
+  color: var(--muted);
+}
+
+.power-dl dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.power-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 .empty {

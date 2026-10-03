@@ -49,6 +49,27 @@ export const api = {
     req<{ node_id: string; t0: number; points: { lat: number; lon: number; alt_km: number }[] }>(
       `/nodes/${encodeURIComponent(nodeId)}/track?duration=${duration}&step=${step}`,
     ),
+  scenarios: () => req<ScenarioInfo[]>('/scenarios'),
+  loadScenario: (id: string) =>
+    req<{ scenario: string; nodes: ComputeNode[]; stations: GroundStation[]; links: LinkConfig[] }>(
+      '/scenarios',
+      { method: 'POST', body: JSON.stringify({ id }) },
+    ),
+  nodePower: (nodeId: string) =>
+    req<{ node_id: string; power_thermal: PowerThermal | null }>(
+      `/nodes/${encodeURIComponent(nodeId)}/power`,
+    ),
+  runEvaluation: (body?: {
+    seed?: number
+    n_jobs?: number
+    policies?: string[]
+    max_steps?: number
+  }) =>
+    req<EvaluationReport>('/evaluations', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  listEvaluations: () => req<EvaluationReport[]>('/evaluations'),
 }
 
 export function connectWs(onEvent: (ev: SimEvent) => void): WebSocket {
@@ -75,6 +96,19 @@ export type JobState =
   | 'failed'
   | 'canceled'
 
+export interface PowerThermal {
+  sunlit: boolean
+  eclipse: boolean
+  solar_w: number
+  battery_soc: number
+  temperature_k: number
+  power_factor: number
+  thermal_factor: number
+  effective_rate_factor: number
+  labels?: Record<string, string>
+  notes?: string
+}
+
 export interface ComputeNode {
   id: string
   kind: NodeKind
@@ -88,6 +122,7 @@ export interface ComputeNode {
   available_at: number
   position_lla?: { lat: number; lon: number; alt_km: number }
   reality_flags?: Record<string, string>
+  power_thermal?: PowerThermal | null
 }
 
 export interface GroundStation {
@@ -134,6 +169,35 @@ export interface Settings {
   speed: number
   t: number
   disrupted_links: Record<string, { down?: boolean; bandwidth_factor?: number; until?: number }>
+  scenario_id?: string
+  headless?: boolean
+  persist?: boolean
+}
+
+export interface ScenarioInfo {
+  id: string
+  label: string
+  description: string
+}
+
+export interface EvaluationPolicyRow {
+  policy: string
+  n_jobs: number
+  deadline_hit_rate: number
+  mean_cost: number
+  mean_completion: number
+  mean_compute_wait_s: number
+  completion_prediction_mae?: number
+  cost_prediction_mae?: number
+  n_failed: number
+}
+
+export interface EvaluationReport {
+  id: string
+  scenario_id: string
+  seed: number
+  created_t: number
+  policies: EvaluationPolicyRow[]
 }
 
 export interface Hop {

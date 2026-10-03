@@ -3,10 +3,13 @@ import {
   api,
   connectWs,
   type ComputeNode,
+  type EvaluationReport,
   type GroundStation,
   type Job,
   type LinkConfig,
   type Plan,
+  type PowerThermal,
+  type ScenarioInfo,
   type Settings,
   type Transfer,
 } from './api'
@@ -82,6 +85,11 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [showMore, setShowMore] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [scenarios, setScenarios] = useState<ScenarioInfo[]>([])
+  const [evalReport, setEvalReport] = useState<EvaluationReport | null>(null)
+  const [evalBusy, setEvalBusy] = useState(false)
+  const [evalErr, setEvalErr] = useState<string | null>(null)
+  const [powerThermal, setPowerThermal] = useState<PowerThermal | null>(null)
   const [form, setForm] = useState({
     input_mb: 5,
     output_mb: 1,
@@ -133,6 +141,34 @@ export default function App() {
       applySnapshot().catch(() => undefined)
     }, 150)
   }, [applySnapshot])
+
+  useEffect(() => {
+    api.scenarios().then(setScenarios).catch(() => undefined)
+  }, [])
+
+  const selectedOrbital = useMemo(
+    () => nodes.find((n) => n.id === selectedId && n.kind === 'orbital') || null,
+    [nodes, selectedId],
+  )
+  const powerTick = settings?.t != null ? Math.floor(settings.t / 30) : 0
+
+  useEffect(() => {
+    if (!selectedOrbital) {
+      setPowerThermal(null)
+      return
+    }
+    if (selectedOrbital.power_thermal) setPowerThermal(selectedOrbital.power_thermal)
+    let cancelled = false
+    api
+      .nodePower(selectedOrbital.id)
+      .then((res) => {
+        if (!cancelled) setPowerThermal(res.power_thermal)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [selectedOrbital?.id, powerTick])
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -230,10 +266,10 @@ export default function App() {
     }
   }, [applySnapshot, scheduleRefresh])
 
-  const run = async (fn: () => Promise<unknown>) => {
+  const run = async (fn: () => Promise<unknown>, timeoutMs = 30000) => {
     if (busy) return
     setBusy(true)
-    const safety = window.setTimeout(() => setBusy(false), 30000)
+    const safety = window.setTimeout(() => setBusy(false), timeoutMs)
     try {
       await fn()
       await applySnapshot()
@@ -241,6 +277,49 @@ export default function App() {
       setOrbitalMeta(recs.map((r) => `${r.name} (${r.norad_id})`).join(', '))
     } finally {
       window.clearTimeout(safety)
+      setBusy(false)
+    }
+  }
+
+  const switchScenario = (id: string) =>
+    run(async () => {
+      setSelectedJobId(null)
+      selectedJobIdRef.current = null
+      setSelectedId(null)
+      setEvalReport(null)
+      await api.loadScenario(id)
+      const snap = await api.snapshot()
+      const first = snap.stations[0]?.id
+      if (first) {
+        setForm((f) => ({ ...f, source_id: first, destination_id: first }))
+      }
+    })
+
+  const runEval = async () => {
+    if (busy || evalBusy) return
+    setEvalBusy(true)
+    setEvalErr(null)
+    setBusy(true)
+    try {
+      const report = await api.runEvaluation({
+        seed: 1,
+        n_jobs: 3,
+        policies: ['planner', 'cheapest', 'earth_only'],
+        max_steps: 2000,
+      })
+      setEvalReport(report)
+      await api.reset()
+      await applySnapshot()
+    } catch (e) {
+      setEvalErr(e instanceof Error ? e.message : 'Evaluation failed')
+      try {
+        await api.reset()
+        await applySnapshot()
+      } catch {
+        /* ignore */
+      }
+    } finally {
+      setEvalBusy(false)
       setBusy(false)
     }
   }
@@ -384,7 +463,18 @@ export default function App() {
             simT={settings?.t}
           />
           <div className="globe-foot">
-            {orbitalMeta || 'Loading satellites…'}
+            <span>
+              {settings?.scenario_id ? `${settings.scenario_id} · ` : ''}
+              {orbitalMeta || 'Loading satellites…'}
+            </span>
+            <span className="globe-foot-links">
+              <a href="http://127.0.0.1:43124/operator/" target="_blank" rel="noreferrer">
+                Operator
+              </a>
+              <a href="http://127.0.0.1:43124/docs" target="_blank" rel="noreferrer">
+                Docs
+              </a>
+            </span>
           </div>
         </section>
 
@@ -684,6 +774,27 @@ export default function App() {
               </div>
             )}
 
+            {selectedOrbital && powerThermal && (
+              <div className="power-block">
+                <p className="power-head">
+                  Power / thermal · <strong>{selectedOrbital.id}</strong>
+                </p>
+                <dl className="power-dl">
+                  <dt>Sun</dt>
+                  <dd>{powerThermal.eclipse ? 'Eclipse' : powerThermal.sunlit ? 'Sunlit' : '—'}</dd>
+                  <dt>Battery</dt>
+                  <dd>{fmt(powerThermal.battery_soc * 100, 0)}%</dd>
+                  <dt>Temp</dt>
+                  <dd>{fmt(powerThermal.temperature_k, 0)} K</dd>
+                  <dt>Rate factor</dt>
+                  <dd>{fmt(powerThermal.effective_rate_factor, 2)}</dd>
+                </dl>
+                <p className="power-note">
+                  {powerThermal.notes || 'Assumption-labelled model; not spacecraft telemetry.'}
+                </p>
+              </div>
+            )}
+
             <button
               type="button"
               className="more"
@@ -693,20 +804,92 @@ export default function App() {
             </button>
             {showAdvanced && (
               <div className="advanced">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    run(async () => {
-                      setSelectedJobId(null)
-                      selectedJobIdRef.current = null
-                      await api.reset()
-                    })
-                  }
-                >
-                  Reset simulation
-                </button>
-                <p className="muted" style={{ margin: '0.55rem 0 0.35rem', fontSize: '0.88rem' }}>
+                <label className="adv-label">
+                  Scenario
+                  <select
+                    value={settings?.scenario_id || 'mvp-thesis'}
+                    disabled={busy || evalBusy}
+                    onChange={(e) => void switchScenario(e.target.value)}
+                  >
+                    {(scenarios.length
+                      ? scenarios
+                      : [
+                          { id: 'mvp-thesis', label: 'MVP thesis', description: '' },
+                          { id: 'leo-constellation', label: 'LEO constellation', description: '' },
+                        ]
+                    ).map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="muted adv-hint">
+                  {scenarios.find((s) => s.id === settings?.scenario_id)?.description ||
+                    'mvp-thesis for Case A/B; leo-constellation for a larger demo.'}
+                </p>
+
+                <div className="adv-row">
+                  <button type="button" disabled={busy || evalBusy} onClick={() => void runEval()}>
+                    {evalBusy ? 'Evaluating…' : 'Run evaluation'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || evalBusy}
+                    onClick={() =>
+                      run(async () => {
+                        setSelectedJobId(null)
+                        selectedJobIdRef.current = null
+                        setEvalReport(null)
+                        await api.reset()
+                      })
+                    }
+                  >
+                    Reset simulation
+                  </button>
+                </div>
+                {evalErr && <p className="adv-err">{evalErr}</p>}
+                {evalReport && (
+                  <div className="eval-report">
+                    <p className="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.85rem' }}>
+                      Eval {evalReport.id} · {evalReport.scenario_id} · seed {evalReport.seed}
+                    </p>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Policy</th>
+                          <th>On time</th>
+                          <th>Cost</th>
+                          <th>Wait</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {evalReport.policies.map((p) => (
+                          <tr key={p.policy}>
+                            <td>{p.policy}</td>
+                            <td>{fmt(p.deadline_hit_rate * 100, 0)}%</td>
+                            <td>${fmt(p.mean_cost, 3)}</td>
+                            <td>{fmt(p.mean_compute_wait_s, 0)} s</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(() => {
+                      const planner = evalReport.policies.find((p) => p.policy === 'planner')
+                      const cheap = evalReport.policies.find((p) => p.policy === 'cheapest')
+                      if (!planner || !cheap) return null
+                      const ratio = cheap.mean_cost > 0 ? planner.mean_cost / cheap.mean_cost : null
+                      return (
+                        <p className="muted" style={{ margin: '0.4rem 0 0', fontSize: '0.85rem' }}>
+                          Planner cost vs cheapest baseline:{' '}
+                          {ratio == null ? '—' : `${fmt(ratio, 2)}×`}
+                        </p>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                <p className="muted" style={{ margin: '0.7rem 0 0.35rem', fontSize: '0.88rem' }}>
                   Disrupt a link (simulated)
                 </p>
                 <select id="disrupt-link" defaultValue="">
@@ -739,6 +922,15 @@ export default function App() {
                     Clear
                   </button>
                 </div>
+                <p className="adv-links">
+                  <a href="http://127.0.0.1:43124/operator/" target="_blank" rel="noreferrer">
+                    Operator console
+                  </a>
+                  {' · '}
+                  <a href="http://127.0.0.1:43124/docs" target="_blank" rel="noreferrer">
+                    API docs
+                  </a>
+                </p>
               </div>
             )}
           </section>
