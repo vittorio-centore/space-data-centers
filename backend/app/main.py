@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.api.routes import build_router
 from app.assistant.service import AssistantService
+from app.auth import install_api_key_auth
 from app.config import load_config
 from app.errors import install_error_handlers
 from app.logging_setup import install_request_logging, setup_logging
@@ -45,6 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 install_request_logging(app)
+install_api_key_auth(app)
 install_error_handlers(app)
 
 v1 = build_router(get_world, include_in_schema=True)

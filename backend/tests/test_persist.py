@@ -23,8 +23,10 @@ async def test_sqlite_restore(tmp_path):
     job_id = next(iter(w1.jobs))
     t = w1.settings.t
     w1.store.set_meta("t", t)
+    w1.close()
     w2 = SimWorld(cfg, restore=True)
     assert job_id in w2.jobs
     assert isinstance(w2.jobs[job_id], Job)
     assert w2.jobs[job_id].assigned_node_id == "earth-us-east"
     assert w2.plans
+    w2.close()

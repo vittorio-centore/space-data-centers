@@ -34,7 +34,6 @@ async def run_evaluation(world, *, seed: int = 1, n_jobs: int = 6, policies: lis
     source = world.stations[0].id if world.stations else "gs-ashburn"
     dest = source
     template_jobs = seeded_jobs(seed, n_jobs, t0, source, dest)
-    earths = [n.id for n in world.nodes if n.kind.value == "earth"]
     rows: list[EvaluationPolicyRow] = []
 
     for policy in policies:
@@ -42,15 +41,7 @@ async def run_evaluation(world, *, seed: int = 1, n_jobs: int = 6, policies: lis
         await world.seek(t0)
         world.settings.headless = True
         bodies = [dict(j) for j in template_jobs]
-        if policy == "round_robin":
-            results = []
-            for i, body in enumerate(sorted(bodies, key=lambda b: (b.get("deadline_at") is None, b.get("deadline_at") or 0))):
-                body["policy"] = "planner"
-                if earths:
-                    body["forced_node_id"] = earths[i % len(earths)]
-                results.append(await world.submit_job(body))
-        else:
-            results = await world.submit_batch(bodies, policy=policy)
+        results = await world.submit_batch(bodies, policy=policy)
 
         steps = 0
         while steps < max_steps:

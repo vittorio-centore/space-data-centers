@@ -16,6 +16,7 @@ from app.api.schemas import (
     SeekBody,
     SettingsPatch,
 )
+from app.auth import authorize_websocket
 from app.eval.runner import run_evaluation
 from app.scenarios.catalog import list_scenarios
 
@@ -52,6 +53,11 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
                 "power_thermal": "labelled_assumption_not_telemetry",
             },
         }
+
+    @router.get("/contacts")
+    def contacts(horizon_s: Optional[float] = None):
+        """Full-horizon visibility matrix for the inspector (same grid as the planner)."""
+        return get_world().contacts_inspector(horizon_s)
 
     @router.get("/orbital-records")
     def orbital_records():
@@ -105,6 +111,7 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
         if body.sim_step_s is not None:
             w.settings.sim_step_s = float(body.sim_step_s)
             w.orbit.set_cache_step(w.settings.sim_step_s)
+            w.visibility.set_step(w.settings.sim_step_s)
         if body.plan_horizon_s is not None:
             w.settings.plan_horizon_s = float(body.plan_horizon_s)
         if body.speed is not None:
@@ -310,6 +317,9 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
     @router.websocket("/ws")
     async def websocket_events(ws: WebSocket, since: int = 0):
         await ws.accept()
+        if not authorize_websocket(ws):
+            await ws.close(code=4401)
+            return
         w = get_world()
         q = w.subscribe()
         try:
