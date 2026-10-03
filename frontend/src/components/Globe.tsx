@@ -1,24 +1,24 @@
 import { Canvas, useFrame } from '@react-three/fiber'
-import { Html, Line, OrbitControls, Stars } from '@react-three/drei'
+import { Html, Line, OrbitControls } from '@react-three/drei'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import type { ComputeNode, GroundStation, LinkConfig, Plan, Transfer } from '../api'
 
 const R_EARTH = 1
 const COLORS = {
-  ocean: '#0c2436',
-  land: '#1e4a3a',
-  grid: '#2a6b5a',
-  station: '#6ec1ff',
-  earthNode: '#f0b429',
-  orbitalCheap: '#3ecf8e',
-  orbitalAlt: '#d4a05a',
-  linkUp: '#3a9b7a',
-  linkActive: '#ffc857',
-  linkPaused: '#ff8b6a',
-  routeIn: '#e8f4ff',
-  routeOut: '#f0d08a',
-  isl: '#7eb8c9',
+  ocean: '#9eb6c4',
+  land: '#b7c4a8',
+  station: '#3d6e8c',
+  earthNode: '#8a6a2f',
+  orbitalCheap: '#2f6f5e',
+  orbitalAlt: '#6b5b4a',
+  linkUp: '#5a8a7a',
+  linkActive: '#a67c2d',
+  linkPaused: '#9b3b3b',
+  routeIn: '#2c4a5e',
+  routeOut: '#7a6230',
+  isl: '#6a8490',
+  stars: '#d9e2e8',
 }
 
 function latLonToVec(lat: number, lon: number, radius: number) {
@@ -37,15 +37,9 @@ function makeEarthTexture() {
   canvas.width = size
   canvas.height = size
   const ctx = canvas.getContext('2d')!
-  // Ocean base
-  const g = ctx.createLinearGradient(0, 0, 0, size)
-  g.addColorStop(0, '#0a1c2c')
-  g.addColorStop(0.5, '#123248')
-  g.addColorStop(1, '#0a1c2c')
-  ctx.fillStyle = g
+  ctx.fillStyle = COLORS.ocean
   ctx.fillRect(0, 0, size, size)
 
-  // Soft land masses (stylized, not political)
   const blobs = [
     [0.18, 0.32, 0.14, 0.22],
     [0.42, 0.28, 0.1, 0.16],
@@ -64,17 +58,16 @@ function makeEarthTexture() {
       y * size,
       Math.max(rx, ry) * size,
     )
-    grd.addColorStop(0, 'rgba(46, 110, 82, 0.95)')
-    grd.addColorStop(0.55, 'rgba(30, 78, 58, 0.7)')
-    grd.addColorStop(1, 'rgba(18, 50, 72, 0)')
+    grd.addColorStop(0, 'rgba(140, 158, 120, 0.95)')
+    grd.addColorStop(0.7, 'rgba(155, 170, 140, 0.55)')
+    grd.addColorStop(1, 'rgba(158, 182, 196, 0)')
     ctx.fillStyle = grd
     ctx.beginPath()
     ctx.ellipse(x * size, y * size, rx * size, ry * size, 0, 0, Math.PI * 2)
     ctx.fill()
   }
 
-  // Latitude / longitude haze
-  ctx.strokeStyle = 'rgba(120, 190, 170, 0.12)'
+  ctx.strokeStyle = 'rgba(60, 80, 90, 0.08)'
   ctx.lineWidth = 1
   for (let i = 1; i < 12; i++) {
     const y = (i / 12) * size
@@ -83,51 +76,32 @@ function makeEarthTexture() {
     ctx.lineTo(size, y)
     ctx.stroke()
   }
-  for (let i = 1; i < 24; i++) {
-    const x = (i / 24) * size
-    ctx.beginPath()
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, size)
-    ctx.stroke()
-  }
 
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
-  tex.anisotropy = 4
   return tex
 }
 
 function Earth() {
   const tex = useMemo(() => makeEarthTexture(), [])
   return (
-    <group>
-      <mesh>
-        <sphereGeometry args={[R_EARTH, 72, 72]} />
-        <meshStandardMaterial map={tex} roughness={0.92} metalness={0.05} />
-      </mesh>
-      <mesh>
-        <sphereGeometry args={[R_EARTH * 1.012, 48, 48]} />
-        <meshBasicMaterial color="#4ecf9a" transparent opacity={0.05} wireframe />
-      </mesh>
-      <mesh>
-        <sphereGeometry args={[R_EARTH * 1.03, 32, 32]} />
-        <meshBasicMaterial color="#1a3a4a" transparent opacity={0.12} side={THREE.BackSide} />
-      </mesh>
-    </group>
+    <mesh>
+      <sphereGeometry args={[R_EARTH, 64, 64]} />
+      <meshStandardMaterial map={tex} roughness={0.95} metalness={0} />
+    </mesh>
   )
 }
 
-function MarkerLabel({ text, tone }: { text: string; tone: 'real' | 'sim' }) {
-  // pointerEvents must be on Html itself — wrappers can otherwise steal sidebar clicks
+function MarkerLabel({ text }: { text: string }) {
   return (
     <Html
-      distanceFactor={6}
+      distanceFactor={7}
       center
       pointerEvents="none"
       zIndexRange={[1, 0]}
       style={{ pointerEvents: 'none' }}
     >
-      <div className={`globe-label globe-label-${tone}`} style={{ pointerEvents: 'none' }}>
+      <div className="globe-label" style={{ pointerEvents: 'none' }}>
         {text}
       </div>
     </Html>
@@ -145,7 +119,6 @@ function StationMarker({
 }) {
   const pos = latLonToVec(station.lat, station.lon, R_EARTH * 1.02)
   const short = station.name.split('(')[0].trim()
-  const color = selected ? COLORS.earthNode : COLORS.station
   return (
     <group position={pos}>
       <mesh
@@ -154,12 +127,12 @@ function StationMarker({
           onSelect(station.id)
         }}
       >
-        <coneGeometry args={[selected ? 0.028 : 0.02, selected ? 0.055 : 0.04, 5]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.45} />
+        <sphereGeometry args={[selected ? 0.028 : 0.02, 16, 16]} />
+        <meshStandardMaterial color={selected ? COLORS.earthNode : COLORS.station} />
       </mesh>
       {selected && (
-        <group position={[0, 0.05, 0]}>
-          <MarkerLabel text={`${short} · configured site`} tone="sim" />
+        <group position={[0, 0.045, 0]}>
+          <MarkerLabel text={short} />
         </group>
       )}
     </group>
@@ -178,15 +151,6 @@ function OrbitalMarker({
   trail: THREE.Vector3[]
 }) {
   const lla = node.position_lla
-  const pulse = useRef(0)
-  const ring = useRef<THREE.Mesh>(null)
-  useFrame((_, dt) => {
-    pulse.current += dt
-    if (ring.current) {
-      const s = 1 + Math.sin(pulse.current * 3) * 0.12
-      ring.current.scale.setScalar(s)
-    }
-  })
   if (!lla) return null
   const r = R_EARTH + Math.max(0.06, (lla.alt_km || 400) / 6371)
   const pos = latLonToVec(lla.lat, lla.lon, r)
@@ -198,9 +162,9 @@ function OrbitalMarker({
         <Line
           points={trail}
           color={color}
-          lineWidth={selected ? 1.6 : 0.9}
+          lineWidth={selected ? 1.4 : 0.8}
           transparent
-          opacity={selected ? 0.55 : 0.28}
+          opacity={selected ? 0.5 : 0.22}
         />
       )}
       <group position={pos}>
@@ -210,29 +174,12 @@ function OrbitalMarker({
             onSelect(node.id)
           }}
         >
-          <octahedronGeometry args={[selected ? 0.032 : 0.024, 0]} />
-          <meshStandardMaterial
-            color={color}
-            emissive={color}
-            emissiveIntensity={selected ? 0.7 : 0.4}
-            roughness={0.35}
-          />
-        </mesh>
-        <mesh ref={ring} rotation={[Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.04, 0.052, 28]} />
-          <meshBasicMaterial
-            color={color}
-            transparent
-            opacity={selected ? 0.7 : 0.35}
-            side={THREE.DoubleSide}
-          />
+          <sphereGeometry args={[selected ? 0.03 : 0.022, 16, 16]} />
+          <meshStandardMaterial color={color} />
         </mesh>
         {selected && (
-          <group position={[0, 0.06, 0]}>
-            <MarkerLabel
-              text={`${label} · $${node.price_per_work}/wu · sim $`}
-              tone="sim"
-            />
+          <group position={[0, 0.05, 0]}>
+            <MarkerLabel text={label} />
           </group>
         )}
       </group>
@@ -258,16 +205,12 @@ function EarthNodeMarker({
           onSelect(node.id)
         }}
       >
-        <boxGeometry args={[selected ? 0.04 : 0.03, selected ? 0.04 : 0.03, selected ? 0.04 : 0.03]} />
-        <meshStandardMaterial
-          color={COLORS.earthNode}
-          emissive={COLORS.earthNode}
-          emissiveIntensity={0.4}
-        />
+        <boxGeometry args={[selected ? 0.036 : 0.028, selected ? 0.036 : 0.028, selected ? 0.036 : 0.028]} />
+        <meshStandardMaterial color={COLORS.earthNode} />
       </mesh>
       {selected && (
-        <group position={[0, 0.05, 0]}>
-          <MarkerLabel text={`${node.name.split(' ')[0]} DC · sim $`} tone="sim" />
+        <group position={[0, 0.045, 0]}>
+          <MarkerLabel text="Earth DC" />
         </group>
       )}
     </group>
@@ -280,16 +223,12 @@ function LinkTube({
   color,
   opacity,
   radius,
-  dashed,
-  speed = 0,
 }: {
   a: THREE.Vector3
   b: THREE.Vector3
   color: string
   opacity: number
   radius: number
-  dashed?: boolean
-  speed?: number
 }) {
   const curve = useMemo(() => {
     const mid = a.clone().add(b).multiplyScalar(0.5)
@@ -298,27 +237,10 @@ function LinkTube({
     return new THREE.QuadraticBezierCurve3(a, mid, b)
   }, [a.x, a.y, a.z, b.x, b.y, b.z])
 
-  const geom = useMemo(() => {
-    return new THREE.TubeGeometry(curve, 48, radius, 6, false)
-  }, [curve, radius])
-
-  const matRef = useRef<THREE.MeshBasicMaterial>(null)
-  useFrame(() => {
-    if (matRef.current && speed > 0 && dashed) {
-      matRef.current.opacity =
-        opacity * (0.55 + 0.45 * Math.sin(performance.now() * 0.006 * speed))
-    }
-  })
-
+  const geom = useMemo(() => new THREE.TubeGeometry(curve, 40, radius, 5, false), [curve, radius])
   return (
     <mesh geometry={geom}>
-      <meshBasicMaterial
-        ref={matRef}
-        color={color}
-        transparent
-        opacity={opacity}
-        depthWrite={false}
-      />
+      <meshBasicMaterial color={color} transparent opacity={opacity} depthWrite={false} />
     </mesh>
   )
 }
@@ -340,10 +262,19 @@ function TransferPulse({
     return new THREE.QuadraticBezierCurve3(a, mid, b)
   }, [a.x, a.y, a.z, b.x, b.y, b.z])
   const p = curve.getPoint(Math.min(0.98, Math.max(0.02, progress)))
+  const pulse = useRef(0)
+  const mesh = useRef<THREE.Mesh>(null)
+  useFrame((_, dt) => {
+    pulse.current += dt
+    if (mesh.current) {
+      const s = 1 + Math.sin(pulse.current * 4) * 0.15
+      mesh.current.scale.setScalar(s)
+    }
+  })
   return (
-    <mesh position={p}>
-      <sphereGeometry args={[0.022, 12, 12]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.9} />
+    <mesh ref={mesh} position={p}>
+      <sphereGeometry args={[0.018, 12, 12]} />
+      <meshStandardMaterial color={color} />
     </mesh>
   )
 }
@@ -389,20 +320,16 @@ function Scene({
   onSelect: (id: string) => void
   trails: Record<string, { lat: number; lon: number; alt_km: number }[]>
 }) {
-  const activeTransfers = transfers.filter(
-    (t) => t.state === 'active' || t.state === 'paused',
-  )
+  const activeTransfers = transfers.filter((t) => t.state === 'active' || t.state === 'paused')
   const activeLinkIds = new Set(activeTransfers.map((t) => t.active_link_id))
-
   const routeIn = selectedPlan?.input_route ?? []
   const routeOut = selectedPlan?.output_route ?? []
 
   return (
     <>
-      <ambientLight intensity={0.45} />
-      <directionalLight position={[5, 3, 2]} intensity={1.25} color="#fff2d8" />
-      <directionalLight position={[-3, -1, -4]} intensity={0.25} color="#6ec1ff" />
-      <Stars radius={90} depth={50} count={3200} factor={2.8} fade speed={0.25} />
+      <color attach="background" args={['#e7eef2']} />
+      <ambientLight intensity={0.85} />
+      <directionalLight position={[4, 3, 2]} intensity={0.85} color="#fff8ef" />
       <Earth />
 
       {stations.map((s) => (
@@ -432,61 +359,31 @@ function Scene({
         ),
       )}
 
-      {/* Up links */}
       {links
-        .filter((L) => L.up)
+        .filter((L) => L.up && L.kind !== 'terrestrial')
         .map((L) => {
           const a = endpointPos(L.endpoint_a, nodes, stations)
           const b = endpointPos(L.endpoint_b, nodes, stations)
           if (!a || !b) return null
           const active = activeLinkIds.has(L.id)
-          const isTerrestrial = L.kind === 'terrestrial'
-          if (isTerrestrial && !active) {
-            return (
-              <LinkTube
-                key={L.id}
-                a={a}
-                b={b}
-                color={COLORS.station}
-                opacity={0.12}
-                radius={0.003}
-              />
-            )
-          }
           return (
             <LinkTube
               key={L.id}
               a={a}
               b={b}
-              color={
-                active
-                  ? COLORS.linkActive
-                  : L.kind === 'isl'
-                    ? COLORS.isl
-                    : COLORS.linkUp
-              }
-              opacity={active ? 0.85 : L.kind === 'isl' ? 0.28 : 0.4}
-              radius={active ? 0.01 : 0.005}
-              dashed={active}
-              speed={active ? 1.4 : 0}
+              color={active ? COLORS.linkActive : L.kind === 'isl' ? COLORS.isl : COLORS.linkUp}
+              opacity={active ? 0.75 : 0.28}
+              radius={active ? 0.009 : 0.004}
             />
           )
         })}
 
-      {/* Selected plan routes */}
       {routeIn.map((h, i) => {
         const a = endpointPos(h.from_id, nodes, stations)
         const b = endpointPos(h.to_id, nodes, stations)
         if (!a || !b) return null
         return (
-          <LinkTube
-            key={`in-${i}`}
-            a={a}
-            b={b}
-            color={COLORS.routeIn}
-            opacity={0.7}
-            radius={0.008}
-          />
+          <LinkTube key={`in-${i}`} a={a} b={b} color={COLORS.routeIn} opacity={0.55} radius={0.007} />
         )
       })}
       {routeOut.map((h, i) => {
@@ -494,18 +391,10 @@ function Scene({
         const b = endpointPos(h.to_id, nodes, stations)
         if (!a || !b) return null
         return (
-          <LinkTube
-            key={`out-${i}`}
-            a={a}
-            b={b}
-            color={COLORS.routeOut}
-            opacity={0.65}
-            radius={0.008}
-          />
+          <LinkTube key={`out-${i}`} a={a} b={b} color={COLORS.routeOut} opacity={0.5} radius={0.007} />
         )
       })}
 
-      {/* Transfer progress pulses */}
       {activeTransfers.map((tr) => {
         const a = endpointPos(tr.from_id, nodes, stations)
         const b = endpointPos(tr.to_id, nodes, stations)
@@ -521,7 +410,7 @@ function Scene({
         )
       })}
 
-      <OrbitControls enablePan={false} minDistance={2.1} maxDistance={7} />
+      <OrbitControls enablePan={false} minDistance={2.2} maxDistance={6.5} />
     </>
   )
 }
@@ -539,7 +428,6 @@ export default function Globe(props: {
     Record<string, { lat: number; lon: number; alt_km: number }[]>
   >({})
 
-  // Accumulate orbital trails from live positions
   useEffect(() => {
     setTrails((prev) => {
       const next = { ...prev }
@@ -562,23 +450,11 @@ export default function Globe(props: {
     })
   }, [props.nodes])
 
-  const activeCount = props.transfers.filter(
-    (t) => t.state === 'active' || t.state === 'paused',
-  ).length
-  const upLinks = props.links.filter((L) => L.up && L.kind !== 'terrestrial').length
-
   return (
     <div className="globe-wrap">
-      <Canvas camera={{ position: [0, 1.15, 3.15], fov: 42 }} dpr={[1, 1.75]}>
+      <Canvas camera={{ position: [0, 1.1, 3.2], fov: 42 }} dpr={[1, 1.75]}>
         <Scene {...props} trails={trails} />
       </Canvas>
-      <div className="globe-legend">
-        <span className="leg real">Orbit trails · real TLE/SGP4</span>
-        <span className="leg sim">Node $ / bandwidth · simulated</span>
-        <span className="leg">Links up {upLinks}</span>
-        <span className="leg accent">Transfers {activeCount}</span>
-        {props.selectedPlan && <span className="leg route">Route highlighted</span>}
-      </div>
     </div>
   )
 }
