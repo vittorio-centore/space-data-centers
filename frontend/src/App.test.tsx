@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const snapshot = {
+const { api, snapshot, submitResult, marketReport } = vi.hoisted(() => {
+  const snapshot = {
   nodes: [],
   stations: [
     { id: 'gs-ashburn', name: 'Ashburn', lat: 0, lon: 0, alt_m: 0, min_elevation_deg: 10 },
@@ -75,7 +76,10 @@ const api = {
   patchSettings: vi.fn(async () => snapshot.settings),
   runMarketDay: vi.fn(async () => marketReport),
   nodePower: vi.fn(async () => ({ node_id: 'x', power_thermal: null })),
+  reset: vi.fn(async () => ({ t: 0 })),
 }
+  return { api, snapshot, submitResult, marketReport }
+})
 
 vi.mock('./api', () => ({
   api,

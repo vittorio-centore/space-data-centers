@@ -405,11 +405,19 @@ class SimWorld:
             "quota_work": ten.quota_work if ten else None,
         }
 
-    def _quota_block(self, tenant_id: str, extra_s: float, extra_work: float) -> Optional[str]:
+    def _quota_block(
+        self,
+        tenant_id: str,
+        extra_s: float,
+        extra_work: float,
+        *,
+        counting_new_job: bool = True,
+    ) -> Optional[str]:
         ten = self.tenants.get(tenant_id)
         if not ten:
             return None
-        if self.outstanding_jobs(tenant_id) + 1 > ten.quota_outstanding_jobs:
+        extra_jobs = 1 if counting_new_job else 0
+        if self.outstanding_jobs(tenant_id) + extra_jobs > ten.quota_outstanding_jobs:
             return "quota_outstanding_jobs"
         if self.reserved_seconds(tenant_id) + extra_s > ten.quota_reserved_s + 1e-9:
             return "quota_reserved_s"
@@ -614,7 +622,12 @@ class SimWorld:
             plan.policy = policy
             plan.job_id = job.id
             plan.tenant_id = job.tenant_id
-            qerr = self._quota_block(tenant_id, extra_s=max(0.0, plan.compute_end - plan.compute_start), extra_work=0.0)
+            qerr = self._quota_block(
+                tenant_id,
+                extra_s=max(0.0, plan.compute_end - plan.compute_start),
+                extra_work=0.0,
+                counting_new_job=False,
+            )
             if qerr:
                 job.state = JobState.failed
                 job.fail_reason = qerr

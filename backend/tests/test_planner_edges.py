@@ -29,7 +29,10 @@ def test_objective_prefers_deadline_then_cost():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_impossible_deadline_is_infeasible(world):
-    r = await world.submit_job(_body(deadline_at=0.5, work=5000.0, input_bytes=50_000_000))
+    # Tight deadline with every contact and terrestrial hop forced down: no route exists.
+    for L in world.links:
+        world.disrupt_link(L.id, down=True)
+    r = await world.submit_job(_body(deadline_at=1.0, work=5000.0, input_bytes=50_000_000))
     assert r.get("plan") is None
     job = r.get("job") or {}
     assert job.get("state") == "failed"
@@ -38,6 +41,16 @@ async def test_impossible_deadline_is_infeasible(world):
     bc = r.get("baseline_comparison") or {}
     codes = bc.get("reason_codes") or []
     assert "chosen_infeasible" in codes or r.get("plan") is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_all_nodes_out_is_infeasible(world):
+    for n in world.nodes:
+        world.set_outage(n.id, down=True, reason="test")
+    r = await world.submit_job(_body(deadline_at=20_000))
+    assert r.get("plan") is None
+    assert r["job"]["state"] == "failed"
 
 
 @pytest.mark.unit
@@ -82,11 +95,12 @@ async def test_sequential_ids_after_reset(world):
     assert seq.next("job") == "job-00000001"
     assert seq.next("plan") == "plan-00000002"
 
+    await world.reset()
     first = await world.submit_job(_body(forced_node_id="earth-us-east", deadline_at=20_000))
     assert first["job"]["id"].startswith("job-")
     await world.reset()
     second = await world.submit_job(_body(forced_node_id="earth-us-east", deadline_at=20_000))
-    # Counter resets with the world; first product id after reset is the first job.
+    # Counter resets with the world; the first job after each reset shares the same id.
     assert second["job"]["id"] == first["job"]["id"]
     third = await world.submit_job(_body(forced_node_id="earth-us-east", deadline_at=20_000))
     assert third["job"]["id"] != second["job"]["id"]
