@@ -80,6 +80,17 @@ def orbital_records():
     ]
 
 
+@app.get("/nodes/{node_id}/track")
+def node_track(node_id: str, duration: float = 5400.0, step: float = 45.0):
+    """Sample ground-track LLA for orbit visualization (derived from real SGP4)."""
+    node = world.node_by_id.get(node_id)
+    if not node or not node.orbital_record_id:
+        raise HTTPException(404, "orbital node not found")
+    t0 = world.settings.t
+    pts = world.orbit.ground_track(node.orbital_record_id, t0, duration_s=duration, step_s=step)
+    return {"node_id": node_id, "t0": t0, "points": pts}
+
+
 @app.get("/settings")
 def get_settings():
     return world.settings.model_dump()

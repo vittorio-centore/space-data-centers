@@ -323,7 +323,15 @@ class SimWorld:
             job.state = JobState.completed
             job.actual_completion = self.settings.t
             job.actual_cost = plan.estimated_cost
-            await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+            await self.emit(
+                "job_state",
+                {
+                    "job_id": job.id,
+                    "state": job.state.value,
+                    "actual_completion": job.actual_completion,
+                    "actual_cost": job.actual_cost,
+                },
+            )
             return
         hop = plan.output_route[0]
         tr = Transfer(
@@ -461,6 +469,7 @@ class SimWorld:
                     "job_id": job.id,
                     "state": job.state.value,
                     "actual_completion": job.actual_completion,
+                    "actual_cost": job.actual_cost,
                     "estimated_completion": plan.estimated_completion,
                     "estimated_cost": plan.estimated_cost,
                 },

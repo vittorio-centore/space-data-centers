@@ -39,8 +39,8 @@ export default function App() {
   const [showMore, setShowMore] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [form, setForm] = useState({
-    input_bytes: 5_000_000,
-    output_bytes: 1_000_000,
+    input_mb: 5,
+    output_mb: 1,
     work: 200,
     deadline_offset: 3600,
     source_id: 'gs-ashburn',
@@ -124,6 +124,14 @@ export default function App() {
           } else if (ev.type === 'job_state') {
             const jobId = ev.payload.job_id as string
             const state = ev.payload.state as Job['state']
+            const actualCompletion =
+              typeof ev.payload.actual_completion === 'number'
+                ? (ev.payload.actual_completion as number)
+                : undefined
+            const actualCost =
+              typeof ev.payload.actual_cost === 'number'
+                ? (ev.payload.actual_cost as number)
+                : undefined
             setJobs((prev) => {
               const i = prev.findIndex((j) => j.id === jobId)
               if (i < 0) {
@@ -131,9 +139,17 @@ export default function App() {
                 return prev
               }
               const next = prev.slice()
-              next[i] = { ...next[i], state }
+              next[i] = {
+                ...next[i],
+                state,
+                ...(actualCompletion != null ? { actual_completion: actualCompletion } : {}),
+                ...(actualCost != null ? { actual_cost: actualCost } : {}),
+              }
               return next
             })
+            if (state === 'completed' || state === 'failed') {
+              scheduleRefresh()
+            }
             if (!selectedJobIdRef.current && jobId) {
               setSelectedJobId(jobId)
               selectedJobIdRef.current = jobId
@@ -198,8 +214,8 @@ export default function App() {
     run(async () => {
       const t = settings?.t ?? 0
       const res = await api.submitJob({
-        input_bytes: form.input_bytes,
-        output_bytes: form.output_bytes,
+        input_bytes: Math.round(form.input_mb * 1_000_000),
+        output_bytes: Math.round(form.output_mb * 1_000_000),
         work: form.work,
         deadline_at: t + form.deadline_offset,
         source_id: form.source_id,
@@ -288,6 +304,7 @@ export default function App() {
             selectedPlan={selectedPlan}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            simT={settings?.t}
           />
           <div className="globe-foot">
             {orbitalMeta || 'Loading satellites…'}
@@ -299,19 +316,23 @@ export default function App() {
             <h2>New job</h2>
             <div className="form-grid">
               <label>
-                Input bytes
+                Input (MB)
                 <input
                   type="number"
-                  value={form.input_bytes}
-                  onChange={(e) => setForm({ ...form, input_bytes: Number(e.target.value) })}
+                  min={0.1}
+                  step={0.1}
+                  value={form.input_mb}
+                  onChange={(e) => setForm({ ...form, input_mb: Number(e.target.value) })}
                 />
               </label>
               <label>
-                Output bytes
+                Output (MB)
                 <input
                   type="number"
-                  value={form.output_bytes}
-                  onChange={(e) => setForm({ ...form, output_bytes: Number(e.target.value) })}
+                  min={0.1}
+                  step={0.1}
+                  value={form.output_mb}
+                  onChange={(e) => setForm({ ...form, output_mb: Number(e.target.value) })}
                 />
               </label>
               <label>
@@ -323,7 +344,7 @@ export default function App() {
                 />
               </label>
               <label>
-                Deadline (seconds from now)
+                Deadline (s)
                 <input
                   type="number"
                   value={form.deadline_offset}
@@ -439,13 +460,37 @@ export default function App() {
                 </p>
                 <dl>
                   <dt>Estimated finish</dt>
-                  <dd>{fmt(selectedPlan?.estimated_completion, 1)} s</dd>
+                  <dd>
+                    {selectedPlan
+                      ? `${fmt(selectedPlan.estimated_completion, 1)} s`
+                      : '—'}
+                  </dd>
                   <dt>Simulated finish</dt>
-                  <dd>{fmt(selectedJob.actual_completion ?? undefined, 1)} s</dd>
+                  <dd>
+                    {selectedJob.actual_completion != null
+                      ? `${fmt(selectedJob.actual_completion, 1)} s`
+                      : selectedJob.state === 'completed'
+                        ? '…'
+                        : '—'}
+                  </dd>
                   <dt>Estimated cost</dt>
-                  <dd>${fmt(selectedPlan?.estimated_cost, 4)}</dd>
+                  <dd>
+                    {selectedPlan ? `$${fmt(selectedPlan.estimated_cost, 4)}` : '—'}
+                  </dd>
+                  <dt>Simulated cost</dt>
+                  <dd>
+                    {selectedJob.actual_cost != null
+                      ? `$${fmt(selectedJob.actual_cost, 4)}`
+                      : selectedJob.state === 'completed' && selectedPlan
+                        ? `$${fmt(selectedPlan.estimated_cost, 4)}`
+                        : '—'}
+                  </dd>
                   <dt>Deadline</dt>
-                  <dd>{fmt(selectedJob.deadline_at ?? undefined, 0)} s</dd>
+                  <dd>
+                    {selectedJob.deadline_at != null
+                      ? `${fmt(selectedJob.deadline_at, 0)} s`
+                      : '—'}
+                  </dd>
                 </dl>
                 {selectedPlan && (
                   <>

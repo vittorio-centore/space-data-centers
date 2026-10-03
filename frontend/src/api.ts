@@ -45,6 +45,10 @@ export const api = {
   clearDisrupt: (linkId: string) =>
     req(`/links/${encodeURIComponent(linkId)}/disrupt`, { method: 'DELETE' }),
   workers: () => req<WorkerStatus[]>('/workers'),
+  nodeTrack: (nodeId: string, duration = 5400, step = 45) =>
+    req<{ node_id: string; t0: number; points: { lat: number; lon: number; alt_km: number }[] }>(
+      `/nodes/${encodeURIComponent(nodeId)}/track?duration=${duration}&step=${step}`,
+    ),
 }
 
 export function connectWs(onEvent: (ev: SimEvent) => void): WebSocket {
