@@ -11,7 +11,13 @@ export function getTenantContext(): { tenantId: string | null; apiKey: string | 
 
 export function setTenantContext(tenantId: string | null, apiKey?: string | null) {
   activeTenantId = tenantId
-  activeTenantKey = apiKey ?? (tenantId ? `sdc-${tenantId}` : null)
+  // Demo map: sdc-local → local, sdc-alpha → alpha, sdc-beta → beta
+  activeTenantKey =
+    apiKey !== undefined
+      ? apiKey
+      : tenantId
+        ? `sdc-${tenantId}`
+        : 'sdc-local'
 }
 
 function tenantHeaders(): Record<string, string> {
@@ -112,50 +118,34 @@ export const api = {
     return Array.isArray(a) ? a : a.tenants || []
   },
 
-  /** Seed demo tenants alpha / beta (plan names). */
+  /** Tenants are seeded on boot (local/alpha/beta); refresh the list. */
   ensureDemoTenants: async () => {
-    const seeded =
-      (await reqOptional<{ tenants: TenantInfo[] }>('/tenants/demo', { method: 'POST', body: '{}' })) ||
-      (await reqOptional<{ tenants: TenantInfo[] }>('/tenants/seed', {
-        method: 'POST',
-        body: JSON.stringify({ ids: ['alpha', 'beta'] }),
-      }))
-    if (seeded?.tenants) return seeded.tenants
-    // Fall back to create-one endpoints
-    const out: TenantInfo[] = []
-    for (const id of ['alpha', 'beta'] as const) {
-      const created =
-        (await reqOptional<TenantInfo>('/tenants', {
-          method: 'POST',
-          body: JSON.stringify({ id, name: id === 'alpha' ? 'Tenant A' : 'Tenant B' }),
-        })) ||
-        (await reqOptional<TenantInfo>(`/tenants/${id}`, {
-          method: 'PUT',
-          body: JSON.stringify({ name: id === 'alpha' ? 'Tenant A' : 'Tenant B' }),
-        }))
-      if (created) out.push(created)
-      else out.push({ id, name: id === 'alpha' ? 'Tenant A' : 'Tenant B' })
+    const list = await api.listTenants()
+    if (!list || !list.length) {
+      throw new Error('Tenant list empty — is the platform backend running?')
     }
-    return out
+    return list
   },
 
   setActiveTenant: (tenantId: string | null) => {
-    setTenantContext(tenantId, tenantId ? `sdc-${tenantId}` : null)
+    // Empty → local demo key when SDC_TENANT_KEYS is set; open mode ignores the key.
+    setTenantContext(tenantId || 'local', tenantId ? `sdc-${tenantId}` : 'sdc-local')
   },
 
-  runMarketDay: async (body?: { seed?: number; scenario_id?: string }) => {
+  runMarketDay: async (body?: { seed?: number; n_per_tenant?: number; max_steps?: number }) => {
+    const payload = {
+      seed: body?.seed ?? 11,
+      n_per_tenant: body?.n_per_tenant ?? 3,
+      max_steps: body?.max_steps ?? 2000,
+    }
     const report =
-      (await reqOptional<MarketDayReport>('/market-day', {
-        method: 'POST',
-        body: JSON.stringify(body ?? { seed: 1, scenario_id: 'mvp-thesis' }),
-      })) ||
       (await reqOptional<MarketDayReport>('/evaluations/market-day', {
         method: 'POST',
-        body: JSON.stringify(body ?? { seed: 1, scenario_id: 'mvp-thesis' }),
+        body: JSON.stringify(payload),
       })) ||
-      (await reqOptional<MarketDayReport>('/platform/market-day', {
+      (await reqOptional<MarketDayReport>('/market-day', {
         method: 'POST',
-        body: JSON.stringify(body ?? { seed: 1, scenario_id: 'mvp-thesis' }),
+        body: JSON.stringify(payload),
       }))
     if (!report) {
       throw new Error('Market day API not available yet (platform slice).')
@@ -295,6 +285,8 @@ export interface EvaluationReport {
 export interface TenantInfo {
   id: string
   name?: string
+  display_name?: string
+  has_api_key?: boolean
   api_key?: string | null
   quota?: Record<string, number>
 }

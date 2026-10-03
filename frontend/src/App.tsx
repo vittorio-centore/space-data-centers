@@ -199,8 +199,7 @@ export default function App() {
   }
 
   const switchTenant = (id: string) => {
-    const next = id || null
-    api.setActiveTenant(next)
+    api.setActiveTenant(id || 'local')
     setTenantId(id)
     setSelectedJobId(null)
     selectedJobIdRef.current = null
@@ -218,10 +217,7 @@ export default function App() {
         setTenants(list)
         setPlatformReady(true)
       }
-      const report = await api.runMarketDay({
-        seed: 1,
-        scenario_id: settings?.scenario_id || 'mvp-thesis',
-      })
+      const report = await api.runMarketDay({ seed: 11, n_per_tenant: 3, max_steps: 2000 })
       setMarketReport(report)
       await applySnapshot()
     } catch (e) {
@@ -935,29 +931,29 @@ export default function App() {
                 <label className="adv-label">
                   Tenant
                   <select
-                    value={tenantId}
+                    value={tenantId || 'local'}
                     disabled={busy || marketBusy}
                     onChange={(e) => switchTenant(e.target.value)}
                   >
-                    <option value="">Default (open)</option>
                     {(tenants.length
                       ? tenants
                       : [
-                          { id: 'alpha', name: 'Tenant A' },
-                          { id: 'beta', name: 'Tenant B' },
+                          { id: 'local', display_name: 'Local default' },
+                          { id: 'alpha', display_name: 'Tenant A' },
+                          { id: 'beta', display_name: 'Tenant B' },
                         ]
                     ).map((t) => (
                       <option key={t.id} value={t.id}>
-                        {t.name || t.id}
+                        {t.display_name || t.name || t.id}
                         {t.id === 'alpha' ? ' (A)' : t.id === 'beta' ? ' (B)' : ''}
                       </option>
                     ))}
                   </select>
                 </label>
                 <p className="muted adv-hint">
-                  Shared sky · hard reservations · per-tenant quotas. Keys{' '}
+                  Shared sky · hard reservations · per-tenant quotas. Demo keys{' '}
                   <code className="inline-code">sdc-alpha</code> /{' '}
-                  <code className="inline-code">sdc-beta</code> when auth is on.
+                  <code className="inline-code">sdc-beta</code>.
                 </p>
                 <div className="adv-row">
                   <button
@@ -965,7 +961,7 @@ export default function App() {
                     disabled={busy || marketBusy}
                     onClick={() => void ensureDemoTenants()}
                   >
-                    Ensure tenants A/B
+                    Refresh tenants A/B
                   </button>
                   <button
                     type="button"
@@ -977,9 +973,7 @@ export default function App() {
                 </div>
                 {marketErr && <p className="adv-err">{marketErr}</p>}
                 {!platformReady && !marketErr && (
-                  <p className="muted adv-hint">
-                    Platform routes load when the control-plane slice is merged.
-                  </p>
+                  <p className="muted adv-hint">Loading tenant list…</p>
                 )}
                 {marketMetrics && (
                   <div className="eval-report market-report">
