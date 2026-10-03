@@ -390,11 +390,12 @@ class PlacementPlanner:
         return max([node.available_at] + ends) if ends else node.available_at
 
     def _earliest_slot(self, node_id: str, after: float, duration: float) -> float:
+        """Earliest exclusive fit at/after ``after``. Packs gaps between reservations."""
         intervals = sorted(
             [(r.start, r.end) for r in self.reservations if r.node_id == node_id],
             key=lambda x: x[0],
         )
-        t = max(after, self._node_available_at(node_id))
+        t = max(after, 0.0)
         for start, end in intervals:
             if t + duration <= start + 1e-9:
                 return t

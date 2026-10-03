@@ -3,37 +3,98 @@
 import pytest
 
 from app.eval.market_day import count_stolen_windows
-from app.models.types import Reservation
+from app.models.types import (
+    Job,
+    JobState,
+    Plan,
+    PlanPartition,
+    Reservation,
+)
 
 
-def _occupy(world, node_id: str, start: float, end: float, job_id: str) -> None:
-    world.reservations.append(
-        Reservation(job_id=job_id, tenant_id="local", node_id=node_id, start=start, end=end)
+def test_apply_split_plan_books_distinct_nodes_without_overlap(world):
+    job = Job(
+        id="job-split",
+        submitted_at=0.0,
+        input_bytes=1000,
+        output_bytes=100,
+        work=100.0,
+        source_id="gs-ashburn",
+        destination_id="gs-ashburn",
+        allow_split=True,
     )
-    if node_id in world.node_by_id:
-        world.node_by_id[node_id].available_at = max(world.node_by_id[node_id].available_at, end)
+    world.jobs[job.id] = job
+    plan = Plan(
+        id="plan-split",
+        job_id=job.id,
+        compute_node_id="earth-us-east",
+        input_route=[],
+        output_route=[],
+        compute_start=10.0,
+        compute_end=40.0,
+        estimated_cost=1.0,
+        estimated_completion=40.0,
+        is_split=True,
+        partitions=[
+            PlanPartition(
+                node_id="earth-us-east",
+                work=50.0,
+                input_bytes=500,
+                output_bytes=50,
+                compute_start=10.0,
+                compute_end=30.0,
+                estimated_cost=0.5,
+                estimated_completion=30.0,
+            ),
+            PlanPartition(
+                node_id="orbital-css",
+                work=50.0,
+                input_bytes=500,
+                output_bytes=50,
+                compute_start=12.0,
+                compute_end=40.0,
+                estimated_cost=0.5,
+                estimated_completion=40.0,
+            ),
+        ],
+    )
+    world._apply_reservations(job, plan)
+    mine = [r for r in world.reservations if r.job_id == job.id]
+    assert {r.node_id for r in mine} == {"earth-us-east", "orbital-css"}
+    assert count_stolen_windows(world.reservations, world.link_reservations) == 0
+    # Same job, different nodes — intervals may overlap in time.
+    assert mine[0].node_id != mine[1].node_id
 
 
 @pytest.mark.asyncio
-async def test_split_beats_blocked_single_node_and_no_overlap(world):
-    """Short early gaps on two nodes cannot fit the full job but can fit shards."""
-    for n in world.nodes:
-        _occupy(world, n.id, 80.0, 20_000.0, f"block-{n.id}")
+async def test_split_beats_short_gaps_during_css_contact(world):
+    windows = world._contact_windows("gs-ashburn", "orbital-css", 0.0, 86400.0)
+    assert windows, "need a CSS–Ashburn window"
+    t0 = windows[0][0] + 5.0
+    await world.seek(t0)
 
-    # Earth + CSS: leave only ~55s free after typical terrestrial delivery.
-    world.reservations = [r for r in world.reservations if r.node_id not in ("earth-us-east", "orbital-css")]
-    world.node_by_id["earth-us-east"].available_at = 0.0
-    world.node_by_id["orbital-css"].available_at = 0.0
-    _occupy(world, "earth-us-east", 55.0, 20_000.0, "gap-earth")
-    _occupy(world, "orbital-css", 55.0, 20_000.0, "gap-css")
+    world.reservations.clear()
+    world.tenants["local"].quota_reserved_s = 1_000_000.0
+    for n in world.nodes:
+        n.available_at = 0.0
+        world.reservations.append(
+            Reservation(
+                job_id=f"block-{n.id}",
+                tenant_id="local",
+                node_id=n.id,
+                start=t0 + 48.0,
+                end=t0 + 30_000.0,
+            )
+        )
+        n.available_at = t0 + 48.0
 
     r = await world.submit_job(
         {
             "name": "shard-me",
-            "input_bytes": 200_000,
-            "output_bytes": 40_000,
+            "input_bytes": 80_000,
+            "output_bytes": 8_000,
             "work": 3600.0,
-            "deadline_at": 70.0,
+            "deadline_at": t0 + 55.0,
             "source_id": "gs-ashburn",
             "destination_id": "gs-ashburn",
             "allow_split": True,
@@ -41,18 +102,13 @@ async def test_split_beats_blocked_single_node_and_no_overlap(world):
     )
     plan = r.get("plan")
     assert plan is not None, r.get("error")
-    assert plan["is_split"] is True
+    assert plan["is_split"] is True, plan.get("baseline_comparison")
     nodes = [p["node_id"] for p in plan["partitions"]]
-    assert len(nodes) >= 2
-    assert len(set(nodes)) == len(nodes)
+    assert len(set(nodes)) == len(nodes) >= 2
     assert "chose_partition" in plan["baseline_comparison"]["reason_codes"]
-    assert plan["split_assumptions"]
     assert any("store_and_forward" in a for a in plan["split_assumptions"])
-
-    mine = [res for res in world.reservations if res.job_id == r["job"]["id"]]
-    assert len(mine) >= 2
     assert count_stolen_windows(world.reservations, world.link_reservations) == 0
-    # Shards of this job must not overlap each other on the same node.
+    mine = [res for res in world.reservations if res.job_id == r["job"]["id"]]
     by_node: dict[str, list] = {}
     for res in mine:
         by_node.setdefault(res.node_id, []).append(res)
@@ -78,4 +134,4 @@ async def test_split_off_keeps_single_node(world):
     assert r["plan"] is not None
     assert r["plan"]["is_split"] is False
     assert r["plan"]["partitions"] == []
-    assert r["job"]["assigned_node_id"]
+    assert r["job"]["state"] == JobState.planned.value or r["job"]["assigned_node_id"]

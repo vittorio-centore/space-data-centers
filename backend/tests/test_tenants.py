@@ -173,7 +173,9 @@ async def test_market_day_metrics(world):
     assert report.cost_global_cheapest_ignores_tenants >= 0
     assert 0.0 <= report.deadline_hit_rate_ignores_tenants <= 1.0
     assert 0.0 <= report.hit_rate_equity <= 1.0
-    assert report.fairness_beats_ignore_tenants or report.min_tenant_hit_rate >= report.min_tenant_hit_rate_ignores_tenants
+    assert report.stolen_windows == 0
+    assert report.fairness_beats_ignore_tenants
+    assert report.min_tenant_hit_rate > report.min_tenant_hit_rate_ignores_tenants
     again = await run_market_day(world, seed=7, n_per_tenant=3, max_steps=800)
     assert again.deadline_hit_rate == report.deadline_hit_rate
     assert again.cost_reservation_aware == report.cost_reservation_aware

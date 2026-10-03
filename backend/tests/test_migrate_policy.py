@@ -9,7 +9,7 @@ def _earth_job(**extra):
     body = {
         "input_bytes": 400_000,
         "output_bytes": 80_000,
-        "work": 80.0,
+        "work": 2000.0,
         "source_id": "gs-ashburn",
         "destination_id": "gs-ashburn",
         "forced_node_id": "earth-us-east",
