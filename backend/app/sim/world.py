@@ -583,17 +583,30 @@ class SimWorld:
 
     async def pause(self) -> None:
         self.settings.playing = False
+        tick = self._tick_task
+        self._tick_task = None
+        if tick is not None and not tick.done():
+            tick.cancel()
+            try:
+                await tick
+            except asyncio.CancelledError:
+                pass
         await self.emit("metric", {"playing": False})
 
     async def _play_loop(self) -> None:
         try:
             while self.settings.playing:
                 await self.step()
+                if not self.settings.playing:
+                    break
                 delay = max(0.01, self.settings.sim_step_s / max(self.settings.speed, 0.1))
                 await asyncio.sleep(delay)
         except asyncio.CancelledError:
             self.settings.playing = False
             raise
+        finally:
+            if self._tick_task is asyncio.current_task():
+                self._tick_task = None
 
     async def seek(self, t: float) -> None:
         """Jump sim clock (no transfer replay). Used for thesis scenario setup."""

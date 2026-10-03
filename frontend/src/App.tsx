@@ -202,10 +202,12 @@ export default function App() {
   }
 
   const play = () => {
+    if (settings?.playing) return
     setSettings((s) => (s ? { ...s, playing: true } : s))
     api.play().catch(() => undefined)
   }
   const pause = () => {
+    if (settings && !settings.playing) return
     setSettings((s) => (s ? { ...s, playing: false } : s))
     api.pause().catch(() => undefined)
   }
@@ -252,10 +254,6 @@ export default function App() {
               type="button"
               data-action="play"
               className={settings?.playing ? 'active' : 'primary'}
-              onPointerDown={(e) => {
-                e.preventDefault()
-                play()
-              }}
               onClick={play}
             >
               Play
@@ -264,10 +262,6 @@ export default function App() {
               type="button"
               data-action="pause"
               className={!settings?.playing ? 'active' : ''}
-              onPointerDown={(e) => {
-                e.preventDefault()
-                pause()
-              }}
               onClick={pause}
             >
               Pause
@@ -402,11 +396,6 @@ export default function App() {
                   type="button"
                   data-action="thesis-a"
                   disabled={busy}
-                  onPointerDown={(e) => {
-                    if (busy) return
-                    e.preventDefault()
-                    thesis('a')
-                  }}
                   onClick={() => thesis('a')}
                 >
                   Case A: cheap loses
@@ -415,11 +404,6 @@ export default function App() {
                   type="button"
                   data-action="thesis-b"
                   disabled={busy}
-                  onPointerDown={(e) => {
-                    if (busy) return
-                    e.preventDefault()
-                    thesis('b')
-                  }}
                   onClick={() => thesis('b')}
                 >
                   Case B: cheap wins
