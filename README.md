@@ -4,7 +4,7 @@ Job-placement planner for Earth and orbital data centers. Submit a batch job; th
 
 The planner is **deterministic**: same scenario, inputs, and seed produce the same plan.
 
-This branch adds a **shared-sky control plane**: tenants (`local`, `alpha`, `beta`) share one contact graph and one reservation table. Reservations are hard-exclusive (no double-book). Optional per-tenant API keys; when keys are unset every request is the documented default tenant `local`, which still cannot overwrite another tenant’s rows. Single WAL owner (`flock`) — not a cluster.
+This branch adds a **shared-sky control plane**: tenants (`local`, `alpha`, `beta`, `gamma`, `delta`) share one contact graph and one reservation table. Reservations are hard-exclusive (no double-book). Optional per-tenant API keys; when keys are unset every request is the documented default tenant `local`, which still cannot overwrite another tenant’s rows. Single WAL owner (`flock`) — not a cluster. The planner may **split** an image-batch job across compatible nodes when that beats a single node (store-and-forward shards). After compute starts, the assigned node stays fixed unless the job (or settings) sets `disruption_policy=migrate_on_disruption` and the workload is checkpointable.
 
 ## Stack
 
@@ -54,17 +54,17 @@ npm run dev -- --host 0.0.0.0 --port 43123
 
 ### Market-day replay
 
-Two tenants, one overload script, reservation-aware planner vs `cheapest` with tenant ids stripped:
+Four tenants (`alpha`, `beta`, `gamma`, `delta`), one tight overload script, reservation-aware planner vs `cheapest` with tenant ids stripped. Seed `7` is the documented fairness replay.
 
 ```bash
-cd backend && PYTHONPATH=. python3 scripts/market_day.py --seed 11 --n 5
+cd backend && PYTHONPATH=. python3 scripts/market_day.py --seed 7 --n 4
 # or
 curl -X POST http://127.0.0.1:43124/api/v1/evaluations/market-day \
   -H 'Content-Type: application/json' \
-  -d '{"seed":11,"n_per_tenant":5,"max_steps":2500}'
+  -d '{"seed":7,"n_per_tenant":4,"max_steps":2500}'
 ```
 
-The printed row includes `deadline_hit_rate[alpha]`, `deadline_hit_rate[beta]`, `stolen_windows` (must be 0), `cost_reservation_aware`, `cost_global_cheapest_ignores_tenants`, and the ignore-tenants hit rate. Report is persisted in SQLite when `SDC_PERSIST=1`.
+The printed row includes per-tenant `deadline_hit_rate`, `hit_rate_equity`, `min_tenant_hit_rate`, `stolen_windows` (must be 0 for reserved intervals), `cost_reservation_aware`, `cost_global_cheapest_ignores_tenants`, and `fairness_beats_ignore_tenants`. Report is persisted in SQLite when `SDC_PERSIST=1`.
 
 ### Grok Ask + xAI Voice
 

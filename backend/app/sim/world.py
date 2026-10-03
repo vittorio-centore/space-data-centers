@@ -15,6 +15,9 @@ from typing import Any, Awaitable, Callable, Optional
 from app.config import AppConfig, load_config
 from app.ids import IdSeq
 from app.models.types import (
+    CHECKPOINTABLE_WORKLOADS,
+    DISRUPTION_MIGRATE,
+    DISRUPTION_NODE_FIXED,
     ComputeNode,
     Event,
     GroundStation,
@@ -136,6 +139,8 @@ class SimWorld:
             scenario_id=topo.get("scenario_id", "mvp-thesis"),
             headless=self.config.headless,
             persist=self.config.persist,
+            disruption_policy=DISRUPTION_NODE_FIXED,
+            allow_split=False,
         )
         self.orbit.set_cache_step(self.settings.sim_step_s)
         self.contact_model = ContactModel(self.orbit, self.station_by_id, self.node_by_id, self.links)
@@ -359,6 +364,8 @@ class SimWorld:
             self.store.set_meta("disrupted", self.settings.disrupted_links)
             self.store.set_meta("id_seq", self.ids.n)
             self.store.set_meta("stolen_windows", self.stolen_windows)
+            self.store.set_meta("disruption_policy", self.settings.disruption_policy)
+            self.store.set_meta("allow_split", self.settings.allow_split)
 
     def _persist_tenants(self) -> None:
         if self.store:
@@ -467,11 +474,26 @@ class SimWorld:
                 return True
         return False
 
+    def _plan_compute_intervals(self, plan: Plan) -> list[tuple[str, float, float]]:
+        if plan.partitions:
+            return [(p.node_id, p.compute_start, p.compute_end) for p in plan.partitions]
+        return [(plan.compute_node_id, plan.compute_start, plan.compute_end)]
+
+    def _plan_hops(self, plan: Plan):
+        if plan.partitions:
+            hops = []
+            for p in plan.partitions:
+                hops.extend(p.input_route)
+                hops.extend(p.output_route)
+            return hops
+        return list(plan.input_route) + list(plan.output_route)
+
     def _stolen_if_accept(self, job: Job, plan: Plan) -> int:
         n = 0
-        if self._reservation_overlap(plan.compute_node_id, plan.compute_start, plan.compute_end, skip_job=job.id):
-            n += 1
-        for hop in list(plan.input_route) + list(plan.output_route):
+        for node_id, start, end in self._plan_compute_intervals(plan):
+            if self._reservation_overlap(node_id, start, end, skip_job=job.id):
+                n += 1
+        for hop in self._plan_hops(plan):
             if hop.link_id and self._link_overlap(hop.link_id, hop.window_start, hop.window_end, skip_job=job.id):
                 n += 1
         return n
@@ -483,16 +505,19 @@ class SimWorld:
             raise RuntimeError("exclusive_reservation_conflict")
         self.reservations = [r for r in self.reservations if r.job_id != job.id]
         self.link_reservations = [r for r in self.link_reservations if r.job_id != job.id]
-        self.reservations.append(
-            Reservation(
-                job_id=job.id,
-                tenant_id=job.tenant_id,
-                node_id=plan.compute_node_id,
-                start=plan.compute_start,
-                end=plan.compute_end,
+        for node_id, start, end in self._plan_compute_intervals(plan):
+            self.reservations.append(
+                Reservation(
+                    job_id=job.id,
+                    tenant_id=job.tenant_id,
+                    node_id=node_id,
+                    start=start,
+                    end=end,
+                )
             )
-        )
-        for hop in list(plan.input_route) + list(plan.output_route):
+            if node_id in self.node_by_id:
+                self.node_by_id[node_id].available_at = max(self.node_by_id[node_id].available_at, end)
+        for hop in self._plan_hops(plan):
             if hop.link_id:
                 self.link_reservations.append(
                     LinkReservation(
@@ -504,9 +529,6 @@ class SimWorld:
                         bytes=hop.bytes,
                     )
                 )
-        self.node_by_id[plan.compute_node_id].available_at = max(
-            self.node_by_id[plan.compute_node_id].available_at, plan.compute_end
-        )
         self._persist_reservations()
 
     def _restore(self) -> None:
@@ -521,6 +543,10 @@ class SimWorld:
             self.ids.n = int(meta["id_seq"])
         if "stolen_windows" in meta:
             self.stolen_windows = int(meta["stolen_windows"])
+        if "disruption_policy" in meta:
+            self.settings.disruption_policy = str(meta["disruption_policy"])
+        if "allow_split" in meta:
+            self.settings.allow_split = bool(meta["allow_split"])
         self.node_outages = data.get("outages") or {}
         if data.get("tenants"):
             for row in data["tenants"]:
@@ -566,6 +592,14 @@ class SimWorld:
                 self._persist_tenants()
             name = body.get("name")
             name = str(name).strip() if name else None
+            workload_kind = str(body.get("workload_kind") or "image_batch")
+            checkpointable = body.get("checkpointable")
+            if checkpointable is None:
+                checkpointable = workload_kind in CHECKPOINTABLE_WORKLOADS
+            disruption_policy = str(body.get("disruption_policy") or self.settings.disruption_policy)
+            if disruption_policy not in (DISRUPTION_NODE_FIXED, DISRUPTION_MIGRATE):
+                disruption_policy = DISRUPTION_NODE_FIXED
+            allow_split = bool(body.get("allow_split", self.settings.allow_split))
             qerr = self._quota_block(tenant_id, extra_s=0.0, extra_work=float(body.get("work", 200.0)))
             if qerr == "quota_outstanding_jobs" or qerr == "quota_work":
                 return {
@@ -591,6 +625,10 @@ class SimWorld:
                 data_location_id=body.get("source_id", "gs-ashburn"),
                 policy=policy,
                 scenario_id=self.settings.scenario_id,
+                allow_split=allow_split,
+                workload_kind=workload_kind,
+                checkpointable=bool(checkpointable),
+                disruption_policy=disruption_policy,
             )
             if job.deadline_at is not None:
                 job.deadline_at = float(job.deadline_at)
@@ -622,9 +660,12 @@ class SimWorld:
             plan.policy = policy
             plan.job_id = job.id
             plan.tenant_id = job.tenant_id
+            reserved_s = sum(
+                max(0.0, end - start) for _n, start, end in self._plan_compute_intervals(plan)
+            )
             qerr = self._quota_block(
                 tenant_id,
-                extra_s=max(0.0, plan.compute_end - plan.compute_start),
+                extra_s=reserved_s,
                 extra_work=0.0,
                 counting_new_job=False,
             )
@@ -656,6 +697,7 @@ class SimWorld:
             self.plan_revisions.append(plan)
             job.plan_id = plan.id
             job.assigned_node_id = plan.compute_node_id
+            job.partition_node_ids = [p.node_id for p in plan.partitions] if plan.is_split else [plan.compute_node_id]
             job.state = JobState.planned
             self._apply_reservations(job, plan)
             self._persist_job(job)
@@ -692,6 +734,39 @@ class SimWorld:
         return out
 
     async def _begin_input(self, job: Job, plan: Plan) -> None:
+        started = 0
+        if plan.is_split and plan.partitions:
+            for i, part in enumerate(plan.partitions):
+                if not part.input_route:
+                    continue
+                hop = part.input_route[0]
+                tr = Transfer(
+                    id=self.ids.next("xfer"),
+                    job_id=job.id,
+                    tenant_id=job.tenant_id,
+                    direction=TransferDirection.input,
+                    from_id=hop.from_id,
+                    to_id=hop.to_id,
+                    bytes_total=hop.bytes,
+                    bytes_sent=0,
+                    state=TransferState.pending,
+                    active_link_id=hop.link_id,
+                    hop_index=0,
+                    partition_index=i,
+                )
+                self.transfers[tr.id] = tr
+                if self.store:
+                    self.store.put_transfer(tr.model_dump())
+                await self.emit("transfer_progress", {"transfer": tr.model_dump()})
+                started += 1
+            if started == 0:
+                job.state = JobState.queued
+                job.data_location_id = plan.compute_node_id
+                await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+                return
+            job.state = JobState.input_transfer
+            await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+            return
         if not plan.input_route:
             job.state = JobState.queued
             job.data_location_id = plan.compute_node_id
@@ -722,6 +797,47 @@ class SimWorld:
         )
 
     async def _begin_output(self, job: Job, plan: Plan) -> None:
+        if plan.is_split and plan.partitions:
+            started = 0
+            for i, part in enumerate(plan.partitions):
+                if not part.output_route:
+                    continue
+                hop = part.output_route[0]
+                tr = Transfer(
+                    id=self.ids.next("xfer"),
+                    job_id=job.id,
+                    tenant_id=job.tenant_id,
+                    direction=TransferDirection.output,
+                    from_id=hop.from_id,
+                    to_id=hop.to_id,
+                    bytes_total=hop.bytes,
+                    bytes_sent=0,
+                    state=TransferState.pending,
+                    active_link_id=hop.link_id,
+                    hop_index=0,
+                    partition_index=i,
+                )
+                self.transfers[tr.id] = tr
+                await self.emit("transfer_progress", {"transfer": tr.model_dump()})
+                started += 1
+            if started == 0:
+                job.state = JobState.completed
+                job.actual_completion = self.settings.t
+                job.actual_cost = plan.estimated_cost
+                await self.emit(
+                    "job_state",
+                    {
+                        "job_id": job.id,
+                        "state": job.state.value,
+                        "actual_completion": job.actual_completion,
+                        "actual_cost": job.actual_cost,
+                    },
+                )
+                return
+            job.state = JobState.output_transfer
+            job.data_location_id = job.destination_id
+            await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+            return
         if not plan.output_route:
             job.state = JobState.completed
             job.actual_completion = self.settings.t
@@ -847,7 +963,11 @@ class SimWorld:
         plan = self.plans.get(job.plan_id or "")
         if not plan:
             return
-        route = plan.input_route if tr.direction == TransferDirection.input else plan.output_route
+        if tr.partition_index is not None and plan.partitions and 0 <= tr.partition_index < len(plan.partitions):
+            part = plan.partitions[tr.partition_index]
+            route = part.input_route if tr.direction == TransferDirection.input else part.output_route
+        else:
+            route = plan.input_route if tr.direction == TransferDirection.input else plan.output_route
         next_i = tr.hop_index + 1
         if next_i < len(route):
             hop = route[next_i]
@@ -863,12 +983,43 @@ class SimWorld:
                 state=TransferState.pending,
                 active_link_id=hop.link_id,
                 hop_index=next_i,
+                partition_index=tr.partition_index,
             )
             self.transfers[new_tr.id] = new_tr
             await self.emit("transfer_progress", {"transfer": new_tr.model_dump()})
             return
 
-        # Route complete
+        # Route complete (one partition or the whole job)
+        if plan.is_split and plan.partitions:
+            open_same = [
+                o
+                for o in self.transfers.values()
+                if o.job_id == job.id
+                and o.direction == tr.direction
+                and o.state not in (TransferState.completed, TransferState.failed)
+            ]
+            if open_same:
+                return
+            if tr.direction == TransferDirection.input:
+                job.state = JobState.queued
+                await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+            else:
+                job.state = JobState.completed
+                job.actual_completion = self.settings.t
+                job.actual_cost = plan.estimated_cost
+                await self.emit(
+                    "job_state",
+                    {
+                        "job_id": job.id,
+                        "state": job.state.value,
+                        "actual_completion": job.actual_completion,
+                        "actual_cost": job.actual_cost,
+                        "estimated_completion": plan.estimated_completion,
+                        "estimated_cost": plan.estimated_cost,
+                    },
+                )
+            return
+
         if tr.direction == TransferDirection.input:
             job.state = JobState.queued
             await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
@@ -1175,20 +1326,48 @@ class SimWorld:
                 continue
             await self._recover_job(job, allow_migrate=True)
 
+    def _may_migrate(self, job: Job, *, mid_compute: bool) -> bool:
+        policy = job.disruption_policy or self.settings.disruption_policy
+        if policy != DISRUPTION_MIGRATE:
+            return False
+        if mid_compute:
+            return bool(job.checkpointable and job.workload_kind in CHECKPOINTABLE_WORKLOADS)
+        return True
+
+    async def _fail_job(self, job: Job, reason: str, event: str = "replan") -> dict:
+        job.state = JobState.failed
+        job.fail_reason = reason
+        self._persist_job(job)
+        await self.emit(event, {"job_id": job.id, "ok": False, "reason": job.fail_reason})
+        await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
+        return {"ok": False, "error": job.fail_reason}
+
     async def _recover_job(self, job: Job, allow_migrate: bool) -> dict:
         plan = self.plans.get(job.plan_id or "")
         if not plan:
             return {"ok": False, "error": "no plan"}
         node_down = bool(job.assigned_node_id and self._node_is_out(job.assigned_node_id))
         pre_compute = job.state in (JobState.planned, JobState.input_transfer, JobState.queued)
-        if node_down and job.state == JobState.running:
-            # Safe restart from source: image batch is idempotent
-            return await self._migrate_job(job, from_source=True, reason="node_outage_mid_run")
-        if node_down and pre_compute and allow_migrate:
-            # Try route replan first only if node still usable — it is not
-            return await self._migrate_job(job, from_source=job.state != JobState.queued, reason="node_outage")
+        mid = job.state == JobState.running
+        can_migrate = allow_migrate and self._may_migrate(job, mid_compute=mid)
+        if node_down and mid:
+            if can_migrate:
+                return await self._migrate_job(job, from_source=True, reason="node_outage_mid_run")
+            if job.disruption_policy == DISRUPTION_MIGRATE and not job.checkpointable:
+                return await self._fail_job(
+                    job, "mid_compute_migrate_requires_checkpointable", event="migrated"
+                )
+            return await self._fail_job(
+                job, "node_fixed: assigned node outage; compute does not migrate", event="replan"
+            )
+        if node_down and pre_compute:
+            if can_migrate:
+                return await self._migrate_job(
+                    job, from_source=job.state != JobState.queued, reason="node_outage"
+                )
+            return await self._fail_job(job, "node_fixed: assigned node outage")
         if job.state not in (JobState.input_transfer, JobState.output_transfer, JobState.planned):
-            if allow_migrate and pre_compute:
+            if can_migrate and pre_compute:
                 return await self._migrate_job(job, from_source=True, reason="infeasible_pre_compute")
             return {"ok": False, "error": f"cannot recover in {job.state}"}
         return await self._replan_routes_unlocked(job)
@@ -1203,7 +1382,8 @@ class SimWorld:
             new_plan = planner.replan_routes(job, plan, data_at, phase, self.settings.t)
             if new_plan is None:
                 if job.state in (JobState.planned, JobState.input_transfer, JobState.queued):
-                    return await self._migrate_job(job, from_source=True, reason="route_infeasible")
+                    if self._may_migrate(job, mid_compute=False):
+                        return await self._migrate_job(job, from_source=True, reason="route_infeasible")
                 job.state = JobState.failed
                 job.fail_reason = "replan infeasible; assigned node fixed"
                 self._persist_job(job)
@@ -1227,6 +1407,12 @@ class SimWorld:
 
     async def _migrate_job(self, job: Job, from_source: bool, reason: str) -> dict:
         old_node = job.assigned_node_id
+        if job.id in self._worker_procs:
+            try:
+                self._worker_procs[job.id].kill()
+            except ProcessLookupError:
+                pass
+            self._worker_procs.pop(job.id, None)
         if from_source:
             job.data_location_id = job.source_id
         planner = self._planner()
@@ -1243,6 +1429,7 @@ class SimWorld:
         plan.migrated_from_node_id = old_node
         plan.revision = (self.plans.get(job.plan_id or "") or plan).revision + 1
         job.assigned_node_id = plan.compute_node_id
+        job.partition_node_ids = [p.node_id for p in plan.partitions] if plan.is_split else [plan.compute_node_id]
         job.plan_id = plan.id
         job.worker_started = False
         job.worker_done = False
