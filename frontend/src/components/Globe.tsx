@@ -123,11 +123,11 @@ function Earth() {
 function MarkerLabel({ text }: { text: string }) {
   return (
     <Html
-      distanceFactor={28}
+      distanceFactor={64}
       center
       pointerEvents="none"
       zIndexRange={[10, 0]}
-      style={{ pointerEvents: 'none' }}
+      style={{ pointerEvents: 'none', transform: 'translate3d(0,0,0)' }}
     >
       <div className="globe-label" style={{ pointerEvents: 'none' }}>
         {text}
