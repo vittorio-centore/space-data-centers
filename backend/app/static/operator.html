@@ -22,6 +22,8 @@
     <button id="thesisA">Thesis A</button>
     <button id="thesisB">Thesis B</button>
     <button id="eval">Run evaluation</button>
+    <button id="market">Market day</button>
+    <button id="tenants">Tenants</button>
     <select id="scenario">
       <option value="mvp-thesis">mvp-thesis</option>
       <option value="leo-constellation">leo-constellation</option>
@@ -45,6 +47,10 @@
       show("/api/v1/presets/thesis/b", { method: "POST" });
     document.getElementById("eval").onclick = () =>
       show("/api/v1/evaluations", { method: "POST", body: JSON.stringify({ seed: 1, n_jobs: 4, max_steps: 800 }) });
+    document.getElementById("market").onclick = () =>
+      show("/api/v1/evaluations/market-day", { method: "POST", body: JSON.stringify({ seed: 11, n_per_tenant: 3, max_steps: 800 }) });
+    document.getElementById("tenants").onclick = () =>
+      show("/api/v1/tenants");
     document.getElementById("load").onclick = () =>
       show("/api/v1/scenarios", { method: "POST", body: JSON.stringify({ id: document.getElementById("scenario").value }) });
   </script>

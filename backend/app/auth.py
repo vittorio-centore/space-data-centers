@@ -15,8 +15,10 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.errors import error_body
+from app.tenants import default_tenant, tenant_auth_required, tenant_for_key
 
 DEMO_API_KEY = "sdc-demo"
+DEMO_TENANT_KEYS = "sdc-alpha:alpha,sdc-beta:beta"
 
 OPEN_EXACT = {
     "/health",
@@ -35,7 +37,7 @@ def configured_api_key() -> str:
 
 
 def auth_required() -> bool:
-    return bool(configured_api_key())
+    return tenant_auth_required()
 
 
 def extract_key(headers: dict[str, str], query_key: str = "") -> str:
@@ -51,10 +53,15 @@ def extract_key(headers: dict[str, str], query_key: str = "") -> str:
 
 
 def key_ok(provided: str) -> bool:
-    expected = configured_api_key()
-    if not expected:
+    if not auth_required():
         return True
-    return provided == expected
+    return tenant_for_key(provided) is not None
+
+
+def resolve_tenant_id(provided: str) -> str | None:
+    if not auth_required():
+        return default_tenant()
+    return tenant_for_key(provided)
 
 
 def path_is_open(path: str) -> bool:
@@ -67,16 +74,19 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         if request.method == "OPTIONS":
             return await call_next(request)
-        if not auth_required() or path_is_open(request.url.path):
+        if path_is_open(request.url.path) or request.method == "OPTIONS":
+            request.state.tenant_id = default_tenant()
             return await call_next(request)
         provided = extract_key({k: v for k, v in request.headers.items()})
-        if key_ok(provided):
-            return await call_next(request)
-        return JSONResponse(
-            status_code=401,
-            content=error_body("unauthorized", "missing or invalid API key", 401),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        tenant_id = resolve_tenant_id(provided)
+        if tenant_id is None:
+            return JSONResponse(
+                status_code=401,
+                content=error_body("unauthorized", "missing or invalid API key", 401),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        request.state.tenant_id = tenant_id
+        return await call_next(request)
 
 
 def install_api_key_auth(app: FastAPI) -> None:
@@ -89,3 +99,7 @@ def authorize_websocket(ws: WebSocket) -> bool:
     q = ws.query_params.get("api_key") or ws.query_params.get("access_token") or ""
     provided = extract_key({k: v for k, v in ws.headers.items()}, q)
     return key_ok(provided)
+
+
+def request_tenant(request: Request) -> str:
+    return getattr(request.state, "tenant_id", None) or default_tenant()

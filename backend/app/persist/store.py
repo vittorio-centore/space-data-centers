@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS link_reservations (id INTEGER PRIMARY KEY AUTOINCREME
 CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, t REAL, seq INTEGER, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS evaluations (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS outages (node_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS files (
+    tenant_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, path)
+);
 """
 
 
@@ -113,6 +120,36 @@ class SqliteStore:
             self.conn.execute("INSERT INTO link_reservations(payload) VALUES(?)", (json.dumps(r),))
         self.conn.commit()
 
+    def put_tenant(self, tenant: dict) -> None:
+        self.conn.execute(
+            "INSERT INTO tenants(id,payload) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+            (tenant["id"], json.dumps(tenant)),
+        )
+        self.conn.commit()
+
+    def put_file(self, rec: dict) -> None:
+        self.conn.execute(
+            "INSERT INTO files(tenant_id,path,payload) VALUES(?,?,?) "
+            "ON CONFLICT(tenant_id,path) DO UPDATE SET payload=excluded.payload",
+            (rec["tenant_id"], rec["path"], json.dumps(rec)),
+        )
+        self.conn.commit()
+
+    def get_file(self, tenant_id: str, path: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT payload FROM files WHERE tenant_id=? AND path=?",
+            (tenant_id, path),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def list_files(self, tenant_id: str) -> list[dict]:
+        return [
+            json.loads(r[0])
+            for r in self.conn.execute(
+                "SELECT payload FROM files WHERE tenant_id=?", (tenant_id,)
+            ).fetchall()
+        ]
+
     def load_all(self) -> dict[str, Any]:
         def rows(table: str) -> list[dict]:
             return [json.loads(r[0]) for r in self.conn.execute(f"SELECT payload FROM {table}").fetchall()]
@@ -128,6 +165,8 @@ class SqliteStore:
             "evaluations": rows("evaluations"),
             "outages": {r[0]: json.loads(r[1]) for r in self.conn.execute("SELECT node_id,payload FROM outages")},
             "revisions": [json.loads(r[0]) for r in self.conn.execute("SELECT payload FROM plan_revisions ORDER BY seq").fetchall()],
+            "tenants": rows("tenants"),
+            "files": rows("files"),
         }
 
     def list_evaluations(self) -> list[dict]:
@@ -146,6 +185,6 @@ class SqliteStore:
         ]
 
     def clear_runtime(self) -> None:
-        for t in ("jobs", "plans", "plan_revisions", "transfers", "reservations", "link_reservations", "events", "outages"):
+        for t in ("jobs", "plans", "plan_revisions", "transfers", "reservations", "link_reservations", "events", "outages", "files"):
             self.conn.execute(f"DELETE FROM {t}")
         self.conn.commit()

@@ -127,6 +127,7 @@ class BaselineComparison(BaseModel):
 class Plan(BaseModel):
     id: str
     job_id: str
+    tenant_id: str = "local"
     compute_node_id: str
     input_route: list[Hop]
     output_route: list[Hop]
@@ -146,6 +147,8 @@ class Plan(BaseModel):
 
 class Job(BaseModel):
     id: str
+    tenant_id: str = "local"
+    name: Optional[str] = None
     submitted_at: float
     input_bytes: int
     output_bytes: int
@@ -172,6 +175,7 @@ class Job(BaseModel):
 class Transfer(BaseModel):
     id: str
     job_id: str
+    tenant_id: str = "local"
     direction: TransferDirection
     from_id: str
     to_id: str
@@ -213,6 +217,7 @@ class WorkerStatus(BaseModel):
 
 class Reservation(BaseModel):
     job_id: str
+    tenant_id: str = "local"
     node_id: str
     start: float
     end: float
@@ -220,10 +225,19 @@ class Reservation(BaseModel):
 
 class LinkReservation(BaseModel):
     job_id: str
+    tenant_id: str = "local"
     link_id: str
     start: float
     end: float
     bytes: int = 0
+
+
+class TenantFile(BaseModel):
+    tenant_id: str
+    path: str
+    content_b64: str
+    content_type: str = "application/octet-stream"
+    nbytes: int = 0
 
 
 class NodeOutage(BaseModel):
@@ -252,6 +266,24 @@ class EvaluationReport(BaseModel):
     created_t: float
     policies: list[EvaluationPolicyRow]
     job_template: dict[str, Any] = Field(default_factory=dict)
+
+
+class MarketDayReport(BaseModel):
+    id: str
+    scenario_id: str
+    seed: int
+    created_t: float
+    n_jobs: int
+    deadline_hit_rate: dict[str, float]
+    stolen_windows: int
+    stolen_windows_ignore_tenants: int = 0
+    cost_reservation_aware: float
+    cost_global_cheapest_ignores_tenants: float
+    deadline_hit_rate_ignores_tenants: float
+    delta_cost: float = 0.0
+    delta_deadline_hit_rate: float = 0.0
+    job_script: list[dict[str, Any]] = Field(default_factory=list)
+    kind: str = "market_day"
 
 
 # Objective constants (documented per spec Appendix A)

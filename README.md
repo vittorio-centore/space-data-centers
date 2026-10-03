@@ -4,6 +4,8 @@ Job-placement planner for Earth and orbital data centers. Submit a batch job; th
 
 The planner is **deterministic**: same scenario, inputs, and seed produce the same plan.
 
+This branch adds a **shared-sky control plane**: tenants (`local`, `alpha`, `beta`) share one contact graph and one reservation table. Reservations are hard-exclusive (no double-book). Optional per-tenant API keys; when keys are unset every request is the documented default tenant `local`, which still cannot overwrite another tenant’s rows. Single WAL owner (`flock`) — not a cluster.
+
 ## Stack
 
 | Layer | Tech |
@@ -47,8 +49,22 @@ npm run dev -- --host 0.0.0.0 --port 43123
 
 - API docs: [http://127.0.0.1:43124/docs](http://127.0.0.1:43124/docs)
 - Inspector contact matrix: `GET /api/v1/contacts` (same sim-step grid the planner uses)
-- Isolated operator page: [http://127.0.0.1:43124/operator/](http://127.0.0.1:43124/operator/)
+- Isolated operator page: [http://127.0.0.1:43124/operator/](http://127.0.0.1:43124/operator/) (includes **Market day**)
 - Dashboard: [http://127.0.0.1:43123](http://127.0.0.1:43123)
+
+### Market-day replay
+
+Two tenants, one overload script, reservation-aware planner vs `cheapest` with tenant ids stripped:
+
+```bash
+cd backend && PYTHONPATH=. python3 scripts/market_day.py --seed 11 --n 5
+# or
+curl -X POST http://127.0.0.1:43124/api/v1/evaluations/market-day \
+  -H 'Content-Type: application/json' \
+  -d '{"seed":11,"n_per_tenant":5,"max_steps":2500}'
+```
+
+The printed row includes `deadline_hit_rate[alpha]`, `deadline_hit_rate[beta]`, `stolen_windows` (must be 0), `cost_reservation_aware`, `cost_global_cheapest_ignores_tenants`, and the ignore-tenants hit rate. Report is persisted in SQLite when `SDC_PERSIST=1`.
 
 ### Grok Ask + xAI Voice
 
@@ -90,7 +106,9 @@ cd backend && PYTHONPATH=. python3 -m pytest -q
 | `SDC_PERSIST` | `1` | Write-through persistence |
 | `SDC_HEADLESS` | `0` | Skip real workers (eval/tests) |
 | `SDC_SCENARIO` | `mvp-thesis` | `mvp-thesis` or `leo-constellation` |
-| `API_KEY` | unset (open) | If set, require `X-API-Key` or `Authorization: Bearer`. Demo value: `sdc-demo`. `/health` and `/ready` stay open. |
+| `API_KEY` | unset (open) | If set, require `X-API-Key` or `Authorization: Bearer`. Maps to tenant `local` (or `SDC_DEFAULT_TENANT`). Demo value: `sdc-demo`. `/health` and `/ready` stay open. |
+| `SDC_TENANT_KEYS` | unset | Optional `key:tenant` map, e.g. `sdc-alpha:alpha,sdc-beta:beta`. Enables per-tenant keys. Open mode always acts as `local`. |
+| `SDC_DEFAULT_TENANT` | `local` | Default-open tenant id. Cannot smash seeded `alpha`/`beta` rows. |
 | `SDC_INSTANCE_LOCK` | `1` | Exclusive flock on `<db>.owner.lock`. One WAL owner; not a cluster. Set `0` only for unsupported experiments. |
 
 ## Reality boundary

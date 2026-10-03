@@ -4,19 +4,22 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from app.api.schemas import (
     DisruptBody,
     EvaluationBody,
+    FilePutBody,
     JobBatchSubmit,
     JobSubmit,
+    MarketDayBody,
     OutageBody,
     ScenarioBody,
     SeekBody,
     SettingsPatch,
 )
-from app.auth import authorize_websocket
+from app.auth import authorize_websocket, request_tenant
+from app.eval.market_day import run_market_day
 from app.eval.runner import run_evaluation
 from app.scenarios.catalog import list_scenarios
 
@@ -158,75 +161,141 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
         return await get_world().load_scenario(body.id)
 
     @router.post("/presets/thesis/{case}")
-    async def run_thesis(case: str):
+    async def run_thesis(case: str, request: Request):
         if case not in ("a", "b", "case_a", "case_b", "case_a_cheap_loses", "case_b_cheap_wins"):
             raise HTTPException(400, "case must be a or b")
-        return await get_world().submit_thesis(case)
+        return await get_world().submit_thesis(case, tenant_id=request_tenant(request))
 
     @router.get("/presets/thesis")
     def thesis_presets():
         return get_world().thesis_presets()
 
-    @router.post("/jobs")
-    async def submit_job(body: JobSubmit):
-        return await get_world().submit_job(body.model_dump())
-
-    @router.post("/jobs/batch")
-    async def submit_batch(body: JobBatchSubmit):
-        return await get_world().submit_batch([j.model_dump() for j in body.jobs], policy=body.policy)
-
-    @router.get("/jobs")
-    def list_jobs():
-        return [j.model_dump() for j in get_world().jobs.values()]
-
-    @router.get("/jobs/{job_id}")
-    def get_job(job_id: str):
-        w = get_world()
-        job = w.jobs.get(job_id)
+    def _owned_job(w, job_id: str, tenant_id: str):
+        job = w.get_job(job_id, tenant_id)
         if not job:
             raise HTTPException(404, "job not found")
+        return job
+
+    @router.post("/jobs")
+    async def submit_job(body: JobSubmit, request: Request):
+        payload = body.model_dump()
+        payload["tenant_id"] = request_tenant(request)
+        result = await get_world().submit_job(payload)
+        if result.get("code") == "quota_exceeded":
+            raise HTTPException(409, result.get("error") or "quota exceeded")
+        return result
+
+    @router.post("/jobs/batch")
+    async def submit_batch(body: JobBatchSubmit, request: Request):
+        tid = request_tenant(request)
+        jobs = []
+        for j in body.jobs:
+            row = j.model_dump()
+            row["tenant_id"] = tid
+            jobs.append(row)
+        return await get_world().submit_batch(jobs, policy=body.policy)
+
+    @router.get("/jobs")
+    def list_jobs(request: Request):
+        return [j.model_dump() for j in get_world().jobs_for(request_tenant(request))]
+
+    @router.get("/jobs/{job_id}")
+    def get_job(job_id: str, request: Request):
+        w = get_world()
+        job = _owned_job(w, job_id, request_tenant(request))
         plan = w.plans.get(job.plan_id or "")
+        if plan and plan.tenant_id != job.tenant_id:
+            plan = None
         return {"job": job.model_dump(), "plan": plan.model_dump() if plan else None}
 
     @router.get("/jobs/{job_id}/plan")
-    def get_plan(job_id: str):
+    def get_plan(job_id: str, request: Request):
         w = get_world()
-        job = w.jobs.get(job_id)
-        if not job or not job.plan_id:
+        job = _owned_job(w, job_id, request_tenant(request))
+        if not job.plan_id:
             raise HTTPException(404, "plan not found")
         plan = w.plans.get(job.plan_id)
-        if not plan:
+        if not plan or plan.tenant_id != job.tenant_id:
             raise HTTPException(404, "plan not found")
         return plan.model_dump()
 
     @router.get("/jobs/{job_id}/plans")
-    def plan_history(job_id: str):
+    def plan_history(job_id: str, request: Request):
         w = get_world()
-        if job_id not in w.jobs:
-            raise HTTPException(404, "job not found")
-        hist = [p.model_dump() for p in w.plan_revisions if p.job_id == job_id]
+        job = _owned_job(w, job_id, request_tenant(request))
+        hist = [p.model_dump() for p in w.plan_revisions if p.job_id == job.id and p.tenant_id == job.tenant_id]
         if w.store:
-            hist = w.store.plan_history(job_id) or hist
+            hist = [p for p in (w.store.plan_history(job.id) or hist) if p.get("tenant_id", job.tenant_id) == job.tenant_id] or hist
         return hist
 
     @router.post("/jobs/{job_id}/cancel")
-    async def cancel_job(job_id: str):
+    async def cancel_job(job_id: str, request: Request):
         w = get_world()
-        if job_id not in w.jobs:
-            raise HTTPException(404, "job not found")
+        _owned_job(w, job_id, request_tenant(request))
         job = await w.cancel_job(job_id)
         return job.model_dump()
 
     @router.post("/jobs/{job_id}/replan")
-    async def replan_job(job_id: str):
+    async def replan_job(job_id: str, request: Request):
         w = get_world()
-        if job_id not in w.jobs:
-            raise HTTPException(404, "job not found")
+        _owned_job(w, job_id, request_tenant(request))
         return await w.try_replan(job_id)
 
     @router.get("/transfers")
-    def list_transfers():
-        return [t.model_dump() for t in get_world().transfers.values()]
+    def list_transfers(request: Request):
+        tid = request_tenant(request)
+        return [t.model_dump() for t in get_world().transfers.values() if t.tenant_id == tid]
+
+    @router.get("/tenants")
+    def list_tenants():
+        w = get_world()
+        return [
+            {
+                "id": t.id,
+                "display_name": t.display_name,
+                "has_api_key": bool(t.api_key),
+                "quota": w.quota_snapshot(t.id),
+            }
+            for t in w.tenants.values()
+        ]
+
+    @router.get("/tenants/me")
+    def tenant_me(request: Request):
+        w = get_world()
+        tid = request_tenant(request)
+        t = w.tenants.get(tid)
+        if not t:
+            raise HTTPException(404, "tenant not found")
+        return {"tenant": t.model_dump(exclude={"api_key"}), "quota": w.quota_snapshot(tid)}
+
+    @router.get("/files")
+    def list_files(request: Request):
+        recs = get_world().list_files(request_tenant(request))
+        return [{"path": f.path, "nbytes": f.nbytes, "content_type": f.content_type} for f in recs]
+
+    @router.get("/files/{path:path}")
+    def get_file(path: str, request: Request):
+        rec = get_world().get_file(request_tenant(request), path)
+        if not rec:
+            raise HTTPException(404, "file not found")
+        import base64
+
+        return {
+            "path": rec.path,
+            "content": base64.b64decode(rec.content_b64).decode("utf-8", errors="replace"),
+            "content_type": rec.content_type,
+            "nbytes": rec.nbytes,
+        }
+
+    @router.put("/files")
+    def put_file(body: FilePutBody, request: Request):
+        rec = get_world().put_file(
+            request_tenant(request),
+            body.path,
+            body.content.encode("utf-8"),
+            body.content_type,
+        )
+        return {"path": rec.path, "nbytes": rec.nbytes, "tenant_id": rec.tenant_id}
 
     @router.get("/events")
     def list_events(limit: int = 200, since: int = Query(default=0, ge=0)):
@@ -283,6 +352,16 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
         w.clear_disruption(link_id)
         await w.emit("link_disrupted", {"link_id": link_id, "disruption": None})
         return {"ok": True}
+
+    @router.post("/evaluations/market-day")
+    async def create_market_day(body: MarketDayBody):
+        report = await run_market_day(
+            get_world(),
+            seed=body.seed,
+            n_per_tenant=body.n_per_tenant,
+            max_steps=body.max_steps,
+        )
+        return report.model_dump()
 
     @router.post("/evaluations")
     async def create_eval(body: EvaluationBody):
