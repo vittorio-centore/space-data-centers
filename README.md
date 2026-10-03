@@ -10,6 +10,7 @@ Job-placement planner for Earth and orbital data centers. Submit a batch job; th
 | Backend | Python + FastAPI, WebSocket `/ws` |
 | Orbit | SGP4 from cached CelesTrak TLEs (`backend/data/tles/`) |
 | Workers | Local asyncio subprocess — image batch resize |
+| Assistant | Grok Ask + xAI Voice (optional `XAI_API_KEY`); offline parser if unset |
 | State | In-memory (reset clears all) |
 
 ## Satellite choices (real TLEs)
@@ -47,6 +48,23 @@ npm run dev -- --host 0.0.0.0 --port 43123
 
 Open [http://127.0.0.1:43123](http://127.0.0.1:43123).
 
+### Grok Ask + xAI Voice
+
+The collapsible **Ask Grok** panel shares one assistant for typed commands and voice. Allowed tools: read state, explain plans, submit jobs, play/pause, disrupt links. **Every action is validated** on the backend. Submit never accepts a node id — the deterministic planner still places the job.
+
+```bash
+export XAI_API_KEY=xai-...          # required for live Grok + xAI STT/TTS
+export XAI_MODEL=grok-4             # optional
+export XAI_API_BASE=https://api.x.ai/v1
+# then start the backend as above
+```
+
+Without a key the same tools run through a keyword intent parser. Voice then uses the browser speech API and still hits `POST /assistant/ask`. Live voice posts audio to `POST /assistant/voice` (xAI STT), then the same validated pipeline; replies may include TTS.
+
+```bash
+cd backend && PYTHONPATH=. python3 -m pytest tests/test_assistant_intents.py tests/test_assistant_parser.py
+```
+
 ### Thesis demos
 
 Use the dashboard buttons **Case A — cheap loses** / **Case B — cheap wins**, or:
@@ -73,4 +91,4 @@ Seconds, meters, bytes, bit/s (bandwidth), dollars.
 
 ## Out of scope (MVP)
 
-Power/thermal, job migration, distributed split jobs, durable DB, Voice API, Jev.
+Power/thermal, job migration, distributed split jobs, durable DB, Jev.

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.assistant.service import AssistantService
 from app.sim.world import SimWorld
 
 app = FastAPI(title="Space Data Centers", version="0.1.0")
@@ -20,6 +21,7 @@ app.add_middleware(
 )
 
 world = SimWorld()
+assistant = AssistantService()
 
 
 class JobSubmit(BaseModel):
@@ -264,6 +266,40 @@ async def clear_disrupt(link_id: str):
     world.clear_disruption(link_id)
     await world.emit("link_disrupted", {"link_id": link_id, "disruption": None})
     return {"ok": True}
+
+
+class AskBody(BaseModel):
+    text: str
+    source: str = "text"
+    speak: bool = False
+
+
+@app.get("/assistant/status")
+def assistant_status():
+    return assistant.status()
+
+
+@app.post("/assistant/ask")
+async def assistant_ask(body: AskBody):
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    source = body.source if body.source in ("text", "voice") else "text"
+    return await assistant.ask(world, text, source=source, speak=body.speak)
+
+
+@app.post("/assistant/voice")
+async def assistant_voice(file: UploadFile = File(...), speak: bool = True):
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty audio")
+    return await assistant.voice(
+        world,
+        data,
+        file.filename or "clip.webm",
+        file.content_type or "application/octet-stream",
+        speak=speak,
+    )
 
 
 @app.websocket("/ws")

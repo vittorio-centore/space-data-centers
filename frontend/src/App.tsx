@@ -11,6 +11,7 @@ import {
   type Transfer,
 } from './api'
 import Globe from './components/Globe'
+import AskPanel from './assistant/AskPanel'
 import './App.css'
 
 function fmt(n: number | null | undefined, d = 1) {
@@ -741,6 +742,8 @@ export default function App() {
               </div>
             )}
           </section>
+
+          <AskPanel onAfterAction={applySnapshot} />
         </aside>
       </div>
     </div>
