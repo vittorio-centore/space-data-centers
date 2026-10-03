@@ -17,6 +17,9 @@ class AppConfig(BaseModel):
     log_json: bool = Field(default_factory=lambda: os.environ.get("SDC_LOG_JSON", "1") not in ("0", "false"))
     persist: bool = Field(default_factory=lambda: os.environ.get("SDC_PERSIST", "1") not in ("0", "false"))
     tick_fail_pause: int = Field(default_factory=lambda: int(os.environ.get("SDC_TICK_FAIL_PAUSE", "3")))
+    instance_lock: bool = Field(
+        default_factory=lambda: os.environ.get("SDC_INSTANCE_LOCK", "1") not in ("0", "false", "no")
+    )
 
 
 def load_config() -> AppConfig:

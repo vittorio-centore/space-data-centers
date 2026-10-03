@@ -46,6 +46,7 @@ npm run dev -- --host 0.0.0.0 --port 43123
 ```
 
 - API docs: [http://127.0.0.1:43124/docs](http://127.0.0.1:43124/docs)
+- Inspector contact matrix: `GET /api/v1/contacts` (same sim-step grid the planner uses)
 - Isolated operator page: [http://127.0.0.1:43124/operator/](http://127.0.0.1:43124/operator/)
 - Dashboard: [http://127.0.0.1:43123](http://127.0.0.1:43123)
 
@@ -89,6 +90,8 @@ cd backend && PYTHONPATH=. python3 -m pytest -q
 | `SDC_PERSIST` | `1` | Write-through persistence |
 | `SDC_HEADLESS` | `0` | Skip real workers (eval/tests) |
 | `SDC_SCENARIO` | `mvp-thesis` | `mvp-thesis` or `leo-constellation` |
+| `API_KEY` | unset (open) | If set, require `X-API-Key` or `Authorization: Bearer`. Demo value: `sdc-demo`. `/health` and `/ready` stay open. |
+| `SDC_INSTANCE_LOCK` | `1` | Exclusive flock on `<db>.owner.lock`. One WAL owner; not a cluster. Set `0` only for unsupported experiments. |
 
 ## Reality boundary
 

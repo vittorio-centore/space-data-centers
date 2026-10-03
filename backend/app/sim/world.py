@@ -33,7 +33,8 @@ from app.models.types import (
     TransferState,
     WorkerStatus,
 )
-from app.orbit.contacts import earth_occludes
+from app.instance import InstanceGuard
+from app.orbit.contacts import ContactModel, VisibilityMatrix, earth_occludes
 from app.orbit.propagate import OrbitEngine, elevation_deg, geodetic_to_ecef, range_m
 from app.persist.store import SqliteStore
 from app.physics.power_thermal import PowerThermalModel
@@ -53,12 +54,22 @@ class SimWorld:
         self.ids = IdSeq()
         self.power = PowerThermalModel()
         self.store: Optional[SqliteStore] = None
+        self.instance: Optional[InstanceGuard] = None
+        self.ready_error: Optional[str] = None
         if self.config.persist:
-            self.store = SqliteStore(self.config.db_path)
+            if self.config.instance_lock:
+                self.instance = InstanceGuard(self.config.db_path)
+                if not self.instance.acquire():
+                    self.ready_error = (
+                        "instance_lock: another process owns this SQLite WAL; "
+                        "this service is a single-instance WAL owner, not a cluster"
+                    )
+            if self.ready_error is None:
+                self.store = SqliteStore(self.config.db_path)
         self.node_outages: dict[str, dict[str, Any]] = {}
+        self._rr_index = 0
         self.plan_revisions: list[Plan] = []
         self.evaluations: dict[str, dict[str, Any]] = {}
-        self.ready_error: Optional[str] = None
         try:
             self._apply_topology(build_scenario(self.config.scenario))
         except Exception as e:
@@ -111,6 +122,8 @@ class SimWorld:
             persist=self.config.persist,
         )
         self.orbit.set_cache_step(self.settings.sim_step_s)
+        self.contact_model = ContactModel(self.orbit, self.station_by_id, self.node_by_id, self.links)
+        self.visibility = VisibilityMatrix(self.contact_model, self.settings.sim_step_s)
         self._prev_link_up: dict[str, bool] = {L.id: L.up for L in self.links}
 
     def ready(self) -> dict[str, Any]:
@@ -130,6 +143,15 @@ class SimWorld:
             "records": len(self.records),
             "persist": bool(self.store),
             "error": self.ready_error,
+            "instance": self.instance.snapshot()
+            if self.instance
+            else {
+                "single_instance": True,
+                "cluster": False,
+                "held": not self.config.persist,
+                "role": "ephemeral" if not self.config.persist else "unlocked",
+                "note": "SQLite WAL is owned by one process; do not run a second writer",
+            },
         }
 
     # ── subscriptions ──────────────────────────────────────────────
@@ -191,47 +213,32 @@ class SimWorld:
         return None
 
     def link_up_at(self, link: LinkConfig, t: float) -> bool:
-        d = self.settings.disrupted_links.get(link.id) or {}
-        if d.get("down"):
-            until = d.get("until")
-            if until is None or t < float(until):
-                return False
-        factor = float(d.get("bandwidth_factor", 1.0))
-        if factor <= 0:
-            return False
+        disrupted = self.settings.disrupted_links
+        vis = getattr(self, "visibility", None)
+        if vis is not None and vis.built:
+            idx_end = vis.t1
+            if 0 <= t <= idx_end + 1e-9:
+                return vis.up_at(link.id, t, disrupted)
+        return self.contact_model.link_up_at(link, t, disrupted)
 
-        if link.kind == LinkKind.terrestrial:
-            return True
-        if link.kind == LinkKind.ground_space:
-            gs_id = link.endpoint_a if link.endpoint_a in self.station_by_id else link.endpoint_b
-            orb_id = link.endpoint_b if gs_id == link.endpoint_a else link.endpoint_a
-            gs = self.station_by_id[gs_id]
-            orb = self.node_by_id[orb_id]
-            ecef = self.orbit.position_ecef_m(orb.orbital_record_id, t)  # type: ignore
-            if ecef is None:
-                return False
-            el = elevation_deg(gs.lat, gs.lon, gs.alt_m, ecef)
-            min_el = link.rules.get("min_elevation_deg", gs.min_elevation_deg)
-            if el < min_el:
-                return False
-            max_range = link.rules.get("max_range_km", gs.max_range_km)
-            if max_range is not None:
-                s_ecef = geodetic_to_ecef(gs.lat, gs.lon, gs.alt_m)
-                if range_m(s_ecef, ecef) > float(max_range) * 1000:
-                    return False
-            return True
-        if link.kind == LinkKind.isl:
-            a = self.node_by_id[link.endpoint_a]
-            b = self.node_by_id[link.endpoint_b]
-            ea = self.orbit.position_ecef_m(a.orbital_record_id, t)  # type: ignore
-            eb = self.orbit.position_ecef_m(b.orbital_record_id, t)  # type: ignore
-            if ea is None or eb is None:
-                return False
-            max_km = float(link.rules.get("max_range_km", 4000))
-            if range_m(ea, eb) > max_km * 1000:
-                return False
-            return not earth_occludes(ea, eb)
-        return False
+    def ensure_visibility(self, t_start: Optional[float] = None, t_end: Optional[float] = None) -> None:
+        t0 = self.settings.t if t_start is None else float(t_start)
+        if t_end is None:
+            t_end = t0 + self.settings.plan_horizon_s * 2.0
+        self.visibility.set_step(self.settings.sim_step_s)
+        self.visibility.ensure(t0, t_end)
+
+    def contacts_inspector(self, horizon_s: Optional[float] = None) -> dict[str, Any]:
+        horizon = float(horizon_s or self.settings.plan_horizon_s)
+        self.ensure_visibility(self.settings.t, self.settings.t + horizon)
+        up_now = {L.id: L.up for L in self.links}
+        return self.visibility.inspector_payload(
+            self.settings.t, horizon, self.settings.disrupted_links, up_now=up_now
+        )
+
+    def compatible_compute_ids(self, t: Optional[float] = None) -> list[str]:
+        t = self.settings.t if t is None else t
+        return [n.id for n in sorted(self.nodes, key=lambda n: n.id) if not self._node_is_out(n.id, t)]
 
     def effective_bandwidth(self, link: LinkConfig) -> float:
         d = self.settings.disrupted_links.get(link.id) or {}
@@ -294,6 +301,7 @@ class SimWorld:
                 n.power_thermal = st.model_dump()
 
     def _planner(self) -> PlacementPlanner:
+        self.ensure_visibility()
         return PlacementPlanner(
             nodes=self.nodes,
             stations=self.stations,
@@ -310,6 +318,7 @@ class SimWorld:
             rate_factor_fn=self._rate_factor,
             id_factory=self.ids.next,
             outages=self.node_outages,
+            visibility=self.visibility,
         )
 
     def _persist_job(self, job: Job) -> None:
@@ -391,6 +400,12 @@ class SimWorld:
 
     async def _submit_job_unlocked(self, body: dict[str, Any]) -> dict[str, Any]:
             policy = str(body.get("policy") or "planner")
+            forced = body.get("forced_node_id")
+            if policy == "round_robin" and not forced:
+                ids = self.compatible_compute_ids()
+                if ids:
+                    forced = ids[self._rr_index % len(ids)]
+                    self._rr_index += 1
             job = Job(
                 id=self.ids.next("job"),
                 submitted_at=self.settings.t,
@@ -413,8 +428,9 @@ class SimWorld:
             await self.emit("job_state", {"job_id": job.id, "state": job.state.value})
 
             planner = self._planner()
+            plan_policy = "planner" if policy == "round_robin" else policy
             plan, baseline, err = planner.plan_job(
-                job, self.settings.t, policy=policy, forced_node_id=body.get("forced_node_id")
+                job, self.settings.t, policy=plan_policy, forced_node_id=forced
             )
             if plan is None:
                 job.state = JobState.failed
@@ -432,6 +448,7 @@ class SimWorld:
                 }
 
             planner.enrich_reasons(plan, job)
+            plan.policy = policy
             plan.job_id = job.id
             self.plans[plan.id] = plan
             self.plan_revisions.append(plan)
@@ -851,6 +868,7 @@ class SimWorld:
             self.plan_revisions.clear()
             self.node_outages.clear()
             self.ids = IdSeq()
+            self._rr_index = 0
             self.power.reset()
             self.settings.t = 0.0
             self.settings.tick_errors = 0
@@ -1120,23 +1138,11 @@ class SimWorld:
         )
         if not link:
             return []
-        step = self.settings.sim_step_s
-        windows: list[tuple[float, float]] = []
-        t = t0
-        in_win = False
-        start = t
-        while t <= t1:
-            up = self.link_up_at(link, t)
-            if up and not in_win:
-                in_win = True
-                start = t
-            elif not up and in_win:
-                in_win = False
-                windows.append((start, t))
-            t += step
-        if in_win:
-            windows.append((start, t))
-        return windows
+        self.ensure_visibility(t0, t1)
+        return [
+            (w.start, w.end)
+            for w in self.visibility.windows(t0, t1, disrupted=self.settings.disrupted_links, links=[link])
+        ]
 
     def thesis_presets(self) -> dict[str, Any]:
         """Compute Case A/B parameters from real SGP4 contact geometry."""

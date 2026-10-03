@@ -6,6 +6,7 @@ os.environ["SDC_PERSIST"] = "0"
 os.environ["SDC_HEADLESS"] = "1"
 os.environ["SDC_SCENARIO"] = "mvp-thesis"
 os.environ["SDC_LOG_JSON"] = "0"
+os.environ.pop("API_KEY", None)
 
 import pytest
 

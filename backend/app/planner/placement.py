@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 import uuid
-from dataclasses import dataclass
 from typing import Optional
 
 from app.models.types import (
@@ -25,24 +24,13 @@ from app.models.types import (
     Plan,
     Reservation,
 )
-from app.orbit.contacts import earth_occludes
+from app.orbit.contacts import ContactWindow, VisibilityMatrix, earth_occludes
 from app.orbit.propagate import OrbitEngine, elevation_deg, geodetic_to_ecef, range_m
 
 OBJECTIVE_DOC = (
     "Prefer feasible-by-deadline then lower cost; "
     "else earlier completion then cost (OBJECTIVE_TIEBREAK)."
 )
-
-
-@dataclass
-class ContactWindow:
-    link_id: str
-    a: str
-    b: str
-    start: float
-    end: float
-    bandwidth_bps: float
-    price_per_bit: float
 
 
 class PlacementPlanner:
@@ -63,6 +51,7 @@ class PlacementPlanner:
         rate_factor_fn=None,
         id_factory=None,
         outages: Optional[dict] = None,
+        visibility: Optional[VisibilityMatrix] = None,
     ):
         self.nodes = sorted(nodes, key=lambda n: n.id)
         self.stations = sorted(stations, key=lambda s: s.id)
@@ -79,6 +68,7 @@ class PlacementPlanner:
         self.rate_factor_fn = rate_factor_fn
         self.id_factory = id_factory
         self.outages = outages or {}
+        self.visibility = visibility
         self.endpoints = set(node_by_id) | set(station_by_id)
 
     def _norm_link_res(self, raw) -> dict[str, list[tuple[float, float, int]]]:
@@ -310,21 +300,15 @@ class PlacementPlanner:
         step = self.sim_step_s
         horizon = t_start + self.plan_horizon_s
         n_steps = int(math.ceil(self.plan_horizon_s / step)) + 1
-
-        # Precompute link up bitmap per step
-        link_up = self._contact_matrix(t_start, n_steps, step)
-
-        # Dijkstra on time-expanded graph: state = (endpoint, step_index)
-        # Cost key: arrival time
         INF = 10**18
-        start_i = 0
-        dist: dict[tuple[str, int], float] = {(src, start_i): t_start}
-        prev: dict[tuple[str, int], tuple[tuple[str, int], Optional[str], int]] = {}
-        # bytes remaining when arriving — for multi-step transfers we track separately
 
-        # Better approach: for store-and-forward of a whole payload on exclusive link,
-        # model edges as "can transfer full nbytes during continuous up window".
-        windows = self._build_windows(t_start, horizon, step, link_up)
+        # Shared full-horizon matrix (global sim_step grid). Fallback: per-call bitmap.
+        if self.visibility is not None:
+            self.visibility.ensure(t_start, horizon)
+            windows = self.visibility.windows(t_start, horizon, disrupted=self.disrupted, links=self.links)
+        else:
+            link_up = self._contact_matrix(t_start, n_steps, step)
+            windows = self._build_windows(t_start, horizon, step, link_up)
 
         # Graph search over endpoints with time
         import heapq
