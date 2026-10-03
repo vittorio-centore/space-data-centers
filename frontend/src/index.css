@@ -1,0 +1,110 @@
+:root {
+  --bg-0: #071018;
+  --bg-1: #0d1b27;
+  --bg-2: #132536;
+  --ink: #e7f0f6;
+  --muted: #8aa0b2;
+  --line: rgba(140, 175, 200, 0.22);
+  --accent: #3ecf8e;
+  --accent-2: #f0b429;
+  --danger: #ff6b6b;
+  --earth: #5eb0ff;
+  --orbital: #9b7bff;
+  --panel: rgba(8, 18, 28, 0.82);
+  --font-display: 'Syne', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  height: 100%;
+  background:
+    radial-gradient(1200px 700px at 10% -10%, #16324a 0%, transparent 55%),
+    radial-gradient(900px 600px at 90% 0%, #1a2a22 0%, transparent 50%),
+    linear-gradient(180deg, var(--bg-0), var(--bg-1) 45%, #050b12);
+  color: var(--ink);
+  font-family: var(--font-mono);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 0.45rem 0.7rem;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+button:hover {
+  border-color: rgba(62, 207, 142, 0.55);
+  background: rgba(62, 207, 142, 0.08);
+}
+
+button.primary {
+  background: linear-gradient(135deg, rgba(62, 207, 142, 0.25), rgba(94, 176, 255, 0.18));
+  border-color: rgba(62, 207, 142, 0.5);
+}
+
+button.danger {
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+button.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px rgba(62, 207, 142, 0.35);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+}
+
+.tag.real {
+  color: #9fd7ff;
+  border-color: rgba(94, 176, 255, 0.4);
+}
+
+.tag.sim {
+  color: #f0d08a;
+  border-color: rgba(240, 180, 41, 0.4);
+}
