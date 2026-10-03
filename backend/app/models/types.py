@@ -113,6 +113,34 @@ class Hop(BaseModel):
     bytes: int
 
 
+# Image-batch shards are independent frames (idempotent / restartable).
+SPLIT_ASSUMPTIONS = (
+    "store_and_forward: each shard waits at endpoints until the next contact window",
+    "image_batch: work units are independent frames; shards are idempotent",
+    "input_sharded: input_bytes split proportional to work share (not shared-memory)",
+    "output_gather: each shard returns its output independently to destination",
+    "compatible_nodes: any compute node that can run image_batch",
+    "not_globally_optimal: sequential greedy vs current reservations",
+)
+
+DISRUPTION_NODE_FIXED = "node_fixed"
+DISRUPTION_MIGRATE = "migrate_on_disruption"
+CHECKPOINTABLE_WORKLOADS = frozenset({"image_batch"})
+
+
+class PlanPartition(BaseModel):
+    node_id: str
+    work: float
+    input_bytes: int
+    output_bytes: int
+    input_route: list[Hop] = Field(default_factory=list)
+    output_route: list[Hop] = Field(default_factory=list)
+    compute_start: float
+    compute_end: float
+    estimated_cost: float
+    estimated_completion: float
+
+
 class BaselineComparison(BaseModel):
     baseline_node_id: str
     baseline_cost: float
@@ -143,6 +171,9 @@ class Plan(BaseModel):
     migrated_from_node_id: Optional[str] = None
     policy: str = "planner"
     rate_factor: float = 1.0
+    partitions: list[PlanPartition] = Field(default_factory=list)
+    is_split: bool = False
+    split_assumptions: list[str] = Field(default_factory=list)
 
 
 class Job(BaseModel):
@@ -170,6 +201,11 @@ class Job(BaseModel):
     policy: str = "planner"
     scenario_id: Optional[str] = None
     seq: int = 0
+    allow_split: bool = False
+    workload_kind: str = "image_batch"
+    checkpointable: bool = True
+    disruption_policy: str = DISRUPTION_NODE_FIXED
+    partition_node_ids: list[str] = Field(default_factory=list)
 
 
 class Transfer(BaseModel):
@@ -184,6 +220,7 @@ class Transfer(BaseModel):
     state: TransferState = TransferState.pending
     active_link_id: Optional[str] = None
     hop_index: int = 0
+    partition_index: Optional[int] = None
 
 
 class Event(BaseModel):
@@ -206,6 +243,8 @@ class Settings(BaseModel):
     headless: bool = False
     persist: bool = True
     tick_errors: int = 0
+    disruption_policy: str = DISRUPTION_NODE_FIXED
+    allow_split: bool = False
 
 
 class WorkerStatus(BaseModel):
@@ -284,6 +323,14 @@ class MarketDayReport(BaseModel):
     delta_deadline_hit_rate: float = 0.0
     job_script: list[dict[str, Any]] = Field(default_factory=list)
     kind: str = "market_day"
+    tenants: list[str] = Field(default_factory=list)
+    hit_rate_equity: float = 0.0
+    hit_rate_equity_ignores_tenants: float = 0.0
+    min_tenant_hit_rate: float = 0.0
+    min_tenant_hit_rate_ignores_tenants: float = 0.0
+    hit_rate_range: float = 0.0
+    hit_rate_range_ignores_tenants: float = 0.0
+    fairness_beats_ignore_tenants: bool = False
 
 
 # Objective constants (documented per spec Appendix A)

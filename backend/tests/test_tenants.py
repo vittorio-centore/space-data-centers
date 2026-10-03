@@ -164,14 +164,18 @@ async def test_crosstalk_unrelated_reservation_does_not_flip_case_a(world):
 
 @pytest.mark.asyncio
 async def test_market_day_metrics(world):
-    report = await run_market_day(world, seed=11, n_per_tenant=3, max_steps=800)
+    report = await run_market_day(world, seed=7, n_per_tenant=3, max_steps=800)
     assert report.stolen_windows == 0
-    assert "alpha" in report.deadline_hit_rate
-    assert "beta" in report.deadline_hit_rate
+    assert set(report.tenants) >= {"alpha", "beta", "gamma", "delta"}
+    for tid in report.tenants:
+        assert tid in report.deadline_hit_rate
     assert report.cost_reservation_aware >= 0
     assert report.cost_global_cheapest_ignores_tenants >= 0
     assert 0.0 <= report.deadline_hit_rate_ignores_tenants <= 1.0
-    again = await run_market_day(world, seed=11, n_per_tenant=3, max_steps=800)
+    assert 0.0 <= report.hit_rate_equity <= 1.0
+    assert report.fairness_beats_ignore_tenants or report.min_tenant_hit_rate >= report.min_tenant_hit_rate_ignores_tenants
+    again = await run_market_day(world, seed=7, n_per_tenant=3, max_steps=800)
     assert again.deadline_hit_rate == report.deadline_hit_rate
     assert again.cost_reservation_aware == report.cost_reservation_aware
     assert again.cost_global_cheapest_ignores_tenants == report.cost_global_cheapest_ignores_tenants
+    assert again.hit_rate_equity == report.hit_rate_equity

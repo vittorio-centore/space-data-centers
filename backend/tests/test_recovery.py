@@ -14,6 +14,7 @@ async def test_disruption_replan_or_migrate(world):
             "destination_id": "gs-ashburn",
             "forced_node_id": "earth-us-east",
             "deadline_at": 20_000,
+            "disruption_policy": "migrate_on_disruption",
         }
     )
     job_id = r["job"]["id"]
@@ -39,6 +40,7 @@ async def test_safe_migrate_on_node_outage(world):
             "destination_id": "gs-ashburn",
             "forced_node_id": "earth-us-east",
             "deadline_at": 20_000,
+            "disruption_policy": "migrate_on_disruption",
         }
     )
     job_id = r["job"]["id"]

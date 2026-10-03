@@ -18,6 +18,12 @@ class JobSubmit(BaseModel):
     policy: str = Field(default="planner", pattern="^(planner|cheapest|earliest|earth_only|round_robin)$")
     forced_node_id: Optional[str] = Field(default=None, max_length=64)
     name: Optional[str] = Field(default=None, max_length=128)
+    allow_split: bool = False
+    disruption_policy: Optional[str] = Field(
+        default=None, pattern="^(node_fixed|migrate_on_disruption)$"
+    )
+    workload_kind: str = Field(default="image_batch", max_length=64)
+    checkpointable: Optional[bool] = None
 
 
 class JobBatchSubmit(BaseModel):
@@ -29,6 +35,10 @@ class SettingsPatch(BaseModel):
     sim_step_s: Optional[float] = Field(default=None, gt=0.1, le=60)
     plan_horizon_s: Optional[float] = Field(default=None, ge=60, le=86400)
     speed: Optional[float] = Field(default=None, gt=0, le=1000)
+    disruption_policy: Optional[str] = Field(
+        default=None, pattern="^(node_fixed|migrate_on_disruption)$"
+    )
+    allow_split: Optional[bool] = None
 
 
 class DisruptBody(BaseModel):
@@ -59,9 +69,10 @@ class EvaluationBody(BaseModel):
 
 
 class MarketDayBody(BaseModel):
-    seed: int = Field(default=11, ge=0, le=1_000_000)
-    n_per_tenant: int = Field(default=5, ge=1, le=16)
+    seed: int = Field(default=7, ge=0, le=1_000_000)
+    n_per_tenant: int = Field(default=4, ge=1, le=16)
     max_steps: int = Field(default=2500, ge=10, le=20_000)
+    tenants: Optional[list[str]] = Field(default=None, max_length=8)
 
 
 class FilePutBody(BaseModel):

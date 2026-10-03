@@ -295,13 +295,21 @@ export interface MarketDayReport {
   id?: string
   scenario_id?: string
   seed?: number
-  /** Per-tenant on-time rates (0–1). */
+  /** Per-tenant on-time rates (0–1). Includes reservation_aware overall. */
   deadline_hit_rate?: Record<string, number>
   per_tenant?: { tenant_id: string; deadline_hit_rate: number; mean_cost?: number }[]
   stolen_windows: number
   cost_reservation_aware: number
   cost_global_cheapest_ignores_tenants: number
+  deadline_hit_rate_ignores_tenants?: number
   deadline_hit_rate_global_cheapest?: number
+  /** 1 − (max − min) per-tenant hit rate. */
+  hit_rate_equity?: number
+  hit_rate_equity_ignores_tenants?: number
+  min_tenant_hit_rate?: number
+  min_tenant_hit_rate_ignores_tenants?: number
+  fairness_beats_ignore_tenants?: boolean
+  tenants?: string[]
   notes?: string
 }
 
@@ -338,6 +346,9 @@ export interface Plan {
   baseline_comparison?: BaselineComparison
   transfer_cost: number
   compute_cost: number
+  /** Present when the planner split work across compatible nodes. */
+  is_split?: boolean
+  partitions?: { node_id: string; work: number; compute_start: number; compute_end: number }[]
 }
 
 export interface Job {
@@ -407,6 +418,10 @@ export interface JobSubmit {
   source_id: string
   destination_id: string
   preset?: string
+  /** Opt-in: planner may shard image-batch work if that beats a single node. */
+  allow_split?: boolean
+  /** Default node_fixed. migrate_on_disruption only if the workload is checkpointable. */
+  disruption_policy?: 'node_fixed' | 'migrate_on_disruption'
 }
 
 export interface SubmitResult {

@@ -1,9 +1,10 @@
 """Shared-sky tenancy. Not accounts, SSO, or billing.
 
 Default-open: when no keys are configured, every HTTP request is tenant ``local``.
-Seeded tenants ``alpha`` and ``beta`` still exist so a second tenant's rows cannot
-be smashed by the default tenant. Optional per-tenant keys map via
-``SDC_TENANT_KEYS=sdc-alpha:alpha,sdc-beta:beta``. Legacy ``API_KEY`` maps to
+Seeded tenants ``alpha``, ``beta``, ``gamma``, and ``delta`` still exist so a
+second tenant's rows cannot be smashed by the default tenant. Optional
+per-tenant keys map via ``SDC_TENANT_KEYS=sdc-alpha:alpha,sdc-beta:beta``.
+Legacy ``API_KEY`` maps to
 ``local`` (or ``SDC_DEFAULT_TENANT``).
 """
 
@@ -15,12 +16,14 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 DEFAULT_TENANT_ID = "local"
-SEEDED_TENANT_IDS = ("local", "alpha", "beta")
+SEEDED_TENANT_IDS = ("local", "alpha", "beta", "gamma", "delta")
 
 # Documented demo keys (used when SDC_TENANT_KEYS is set to the demo map).
 DEMO_TENANT_KEYS = {
     "sdc-alpha": "alpha",
     "sdc-beta": "beta",
+    "sdc-gamma": "gamma",
+    "sdc-delta": "delta",
 }
 
 
@@ -75,6 +78,8 @@ def seed_tenants(key_map: Optional[dict[str, str]] = None) -> dict[str, Tenant]:
         "local": "Local default (open when keys unset)",
         "alpha": "Tenant alpha",
         "beta": "Tenant beta",
+        "gamma": "Tenant gamma",
+        "delta": "Tenant delta",
     }
     tenants: dict[str, Tenant] = {}
     for tid in SEEDED_TENANT_IDS:

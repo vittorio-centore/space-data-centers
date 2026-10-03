@@ -119,6 +119,10 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
             w.settings.plan_horizon_s = float(body.plan_horizon_s)
         if body.speed is not None:
             w.settings.speed = float(body.speed)
+        if body.disruption_policy is not None:
+            w.settings.disruption_policy = body.disruption_policy
+        if body.allow_split is not None:
+            w.settings.allow_split = bool(body.allow_split)
         await w.emit("metric", {"settings": w.settings.model_dump()})
         return w.settings.model_dump()
 
@@ -360,6 +364,7 @@ def build_router(get_world, *, include_in_schema: bool = True) -> APIRouter:
             seed=body.seed,
             n_per_tenant=body.n_per_tenant,
             max_steps=body.max_steps,
+            tenants=body.tenants,
         )
         return report.model_dump()
 

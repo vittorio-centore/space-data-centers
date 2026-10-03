@@ -7,11 +7,13 @@ Objective (constants):
 
 from __future__ import annotations
 
+import itertools
 import math
 import uuid
 from typing import Optional
 
 from app.models.types import (
+    SPLIT_ASSUMPTIONS,
     BaselineComparison,
     ComputeNode,
     GroundStation,
@@ -22,6 +24,7 @@ from app.models.types import (
     LinkReservation,
     NodeKind,
     Plan,
+    PlanPartition,
     Reservation,
 )
 from app.orbit.contacts import ContactWindow, VisibilityMatrix, earth_occludes
@@ -124,6 +127,16 @@ class PlacementPlanner:
                 plan.policy = policy
                 candidates.append(plan)
 
+        if (
+            getattr(job, "allow_split", False)
+            and policy == "planner"
+            and not forced_node_id
+        ):
+            for k in (2, 3):
+                for split in self._split_candidates(job, t_now, k):
+                    split.policy = policy
+                    candidates.append(split)
+
         cheapest = min(self.nodes, key=lambda n: (n.price_per_work, n.id))
         baseline_plan = None if self._node_out(cheapest.id, t_now) else self._plan_for_node(job, cheapest, t_now)
 
@@ -218,6 +231,9 @@ class PlacementPlanner:
             if plan.estimated_completion <= job.deadline_at and bc.baseline_completion > job.deadline_at:
                 if "chosen_meets_deadline" not in reasons:
                     reasons.append("chosen_meets_deadline")
+        if plan.is_split:
+            if "chose_partition" not in reasons:
+                reasons.append("chose_partition")
         if bc.chosen_node_id != bc.baseline_node_id and bc.chosen_cost <= bc.baseline_cost:
             if "chosen_lower_or_equal_cost" not in reasons:
                 reasons.append("chosen_lower_or_equal_cost")
@@ -262,6 +278,110 @@ class PlacementPlanner:
             transfer_cost=transfer_cost,
             compute_cost=compute_cost,
             rate_factor=factor,
+        )
+
+    def _split_work(self, job: Job, nodes: list[ComputeNode]) -> list[tuple[ComputeNode, float, int, int]]:
+        rates = [max(1e-9, n.compute_rate) for n in nodes]
+        total = sum(rates)
+        works: list[float] = []
+        left = float(job.work)
+        for i, rate in enumerate(rates):
+            if i == len(rates) - 1:
+                works.append(max(1e-6, left))
+            else:
+                w = float(job.work) * (rate / total)
+                works.append(w)
+                left -= w
+        in_left = int(job.input_bytes)
+        out_left = int(job.output_bytes)
+        shards: list[tuple[ComputeNode, float, int, int]] = []
+        for i, (node, work) in enumerate(zip(nodes, works)):
+            if i == len(nodes) - 1:
+                ib, ob = max(1, in_left), max(1, out_left)
+            else:
+                share = work / float(job.work) if job.work else 1.0 / len(nodes)
+                ib = max(1, int(round(job.input_bytes * share)))
+                ob = max(1, int(round(job.output_bytes * share)))
+                in_left -= ib
+                out_left -= ob
+            shards.append((node, work, ib, ob))
+        return shards
+
+    def _split_candidates(self, job: Job, t_now: float, k: int) -> list[Plan]:
+        alive = [n for n in self.nodes if not self._node_out(n.id, t_now)]
+        if len(alive) < k:
+            return []
+        out: list[Plan] = []
+        for combo in itertools.combinations(sorted(alive, key=lambda n: n.id), k):
+            plan = self._plan_combo(job, list(combo), t_now)
+            if plan is not None:
+                out.append(plan)
+        return out
+
+    def _plan_combo(self, job: Job, nodes: list[ComputeNode], t_now: float) -> Optional[Plan]:
+        saved_res = list(self.reservations)
+        saved_links = {lid: list(rows) for lid, rows in self.link_reservations.items()}
+        partitions: list[PlanPartition] = []
+        try:
+            for node, work, ib, ob in self._split_work(job, nodes):
+                shard = job.model_copy(update={"work": work, "input_bytes": ib, "output_bytes": ob})
+                piece = self._plan_for_node(shard, node, t_now)
+                if piece is None:
+                    return None
+                partitions.append(
+                    PlanPartition(
+                        node_id=node.id,
+                        work=work,
+                        input_bytes=ib,
+                        output_bytes=ob,
+                        input_route=piece.input_route,
+                        output_route=piece.output_route,
+                        compute_start=piece.compute_start,
+                        compute_end=piece.compute_end,
+                        estimated_cost=piece.estimated_cost,
+                        estimated_completion=piece.estimated_completion,
+                    )
+                )
+                self.reservations.append(
+                    Reservation(
+                        job_id=job.id or "split-scratch",
+                        tenant_id=job.tenant_id,
+                        node_id=node.id,
+                        start=piece.compute_start,
+                        end=piece.compute_end,
+                    )
+                )
+                for hop in list(piece.input_route) + list(piece.output_route):
+                    if hop.link_id:
+                        self.link_reservations.setdefault(hop.link_id, []).append(
+                            (hop.window_start, hop.window_end, hop.bytes)
+                        )
+        finally:
+            self.reservations = saved_res
+            self.link_reservations = saved_links
+
+        if len(partitions) < 2:
+            return None
+        input_route: list[Hop] = []
+        output_route: list[Hop] = []
+        for p in partitions:
+            input_route.extend(p.input_route)
+            output_route.extend(p.output_route)
+        return Plan(
+            id=self._new_plan_id(),
+            job_id=job.id,
+            compute_node_id=partitions[0].node_id,
+            input_route=input_route,
+            output_route=output_route,
+            compute_start=min(p.compute_start for p in partitions),
+            compute_end=max(p.compute_end for p in partitions),
+            estimated_cost=sum(p.estimated_cost for p in partitions),
+            estimated_completion=max(p.estimated_completion for p in partitions),
+            transfer_cost=sum(self._route_cost(p.input_route) + self._route_cost(p.output_route) for p in partitions),
+            compute_cost=sum(p.work * self.node_by_id[p.node_id].price_per_work for p in partitions),
+            partitions=partitions,
+            is_split=True,
+            split_assumptions=list(SPLIT_ASSUMPTIONS),
         )
 
     def _node_available_at(self, node_id: str) -> float:

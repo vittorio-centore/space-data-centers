@@ -16,9 +16,9 @@ async def test_case_a_b_both_tenants_and_market_day(world):
         assert b["plan"]["compute_node_id"] == "orbital-iss-cheap"
         assert "chose_cheapest_node" in b["plan"]["baseline_comparison"]["reason_codes"]
 
-    report = await run_market_day(world, seed=11, n_per_tenant=2, max_steps=500)
+    report = await run_market_day(world, seed=7, n_per_tenant=2, max_steps=500)
     assert report.stolen_windows == 0
-    assert set(report.deadline_hit_rate) >= {"alpha", "beta"}
-    again = await run_market_day(world, seed=11, n_per_tenant=2, max_steps=500)
+    assert set(report.deadline_hit_rate) >= {"alpha", "beta", "gamma", "delta"}
+    again = await run_market_day(world, seed=7, n_per_tenant=2, max_steps=500)
     assert again.deadline_hit_rate == report.deadline_hit_rate
     assert again.cost_reservation_aware == report.cost_reservation_aware
