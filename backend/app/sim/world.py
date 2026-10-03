@@ -577,11 +577,14 @@ class SimWorld:
         await self.emit("metric", {"playing": False})
 
     async def _play_loop(self) -> None:
-        while self.settings.playing:
-            await self.step()
-            # wall sleep: sim_step / speed
-            delay = max(0.01, self.settings.sim_step_s / max(self.settings.speed, 0.1))
-            await asyncio.sleep(delay)
+        try:
+            while self.settings.playing:
+                await self.step()
+                delay = max(0.01, self.settings.sim_step_s / max(self.settings.speed, 0.1))
+                await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            self.settings.playing = False
+            raise
 
     async def seek(self, t: float) -> None:
         """Jump sim clock (no transfer replay). Used for thesis scenario setup."""

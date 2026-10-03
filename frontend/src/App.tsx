@@ -253,21 +253,46 @@ export default function App() {
 
   const bc: BaselineComparison | undefined = selectedPlan?.baseline_comparison
 
+  const [activeThesis, setActiveThesis] = useState<'a' | 'b' | null>(null)
+
+  const runThesis = (c: 'a' | 'b') => {
+    setActiveThesis(c)
+    thesis(c)
+  }
+
   return (
     <div className="app">
       <header className="top">
         <div className="brand-block">
           <div className="brand">Space Data Centers</div>
           <p className="tagline">
-            Placement planner for Earth & orbital compute — cheapest is not always best.
+            Place batch jobs across Earth and orbital compute. Contact windows come from real
+            TLEs — prices and bandwidth are simulated.
           </p>
         </div>
         <div className="top-meta">
-          <span className="tag real">Ephemeris / contacts: real SGP4</span>
-          <span className="tag sim">Compute / bandwidth / $: simulated</span>
+          <span className="tag real">Real: TLE · SGP4 · contacts</span>
+          <span className="tag sim">Sim: FLOPS · bandwidth · $</span>
           <span className="status">{status}</span>
         </div>
       </header>
+
+      <div className="reality-strip">
+        <div className="bit">
+          <span className="tag real">Real</span>
+          <strong>Ephemeris & elevation contacts</strong>
+          <span>from cached CelesTrak TLEs</span>
+        </div>
+        <div className="bit">
+          <span className="tag sim">Simulated</span>
+          <strong>Compute rates, link Mbps, pricing</strong>
+          <span>configured for the thesis demo</span>
+        </div>
+        <div className="bit">
+          <span>Epoch</span>
+          <strong>{settings?.epoch_utc?.slice(0, 19) || '—'}Z</strong>
+        </div>
+      </div>
 
       <div className="layout">
         <section className="globe-panel">
@@ -281,12 +306,15 @@ export default function App() {
             onSelect={setSelectedId}
           />
           <div className="globe-caption muted">
-            {orbitalMeta || 'Loading TLEs…'}
+            <span>{orbitalMeta || 'Loading TLEs…'}</span>
+            <span>
+              White/amber tubes = selected plan · Gold pulse = active transfer
+            </span>
           </div>
         </section>
 
         <aside className="side">
-          <section className="card controls">
+          <section className="panel controls">
             <h2>Simulation</h2>
             <div className="row">
               <button
@@ -314,6 +342,7 @@ export default function App() {
                   run(async () => {
                     setSelectedJobId(null)
                     selectedJobIdRef.current = null
+                    setActiveThesis(null)
                     await api.reset()
                   })
                 }
@@ -345,29 +374,40 @@ export default function App() {
             </label>
           </section>
 
-          <section className="card">
+          <section className="panel">
             <h2>Thesis demos</h2>
             <p className="muted small">
-              Case A: next ISS contact too late → Earth wins. Case B: contact soon → cheap
-              orbital wins.
+              Same job shape, different contact phasing. Seeks sim time automatically.
             </p>
-            <div className="row">
-              <button type="button" disabled={busy} onClick={() => thesis('a')}>
-                Case A — cheap loses
+            <div className="thesis-grid">
+              <button
+                type="button"
+                className={`thesis-btn case-a ${activeThesis === 'a' ? 'active' : ''}`}
+                disabled={busy}
+                onClick={() => runThesis('a')}
+              >
+                <strong>Case A — cheap loses</strong>
+                <span>
+                  After an ISS pass, tight deadline → planner picks Earth; baseline ISS misses
+                  contact.
+                </span>
               </button>
               <button
                 type="button"
-                className="primary"
+                className={`thesis-btn case-b ${activeThesis === 'b' ? 'active' : ''}`}
                 disabled={busy}
-                onClick={() => thesis('b')}
+                onClick={() => runThesis('b')}
               >
-                Case B — cheap wins
+                <strong>Case B — cheap wins</strong>
+                <span>
+                  Before the next pass → cheapest orbital meets the deadline at lowest cost.
+                </span>
               </button>
             </div>
-            {busy && <p className="muted small">Running preset…</p>}
+            {busy && <p className="muted small">Seeking contact window & placing…</p>}
           </section>
 
-          <section className="card">
+          <section className="panel">
             <h2>Submit job</h2>
             <div className="form-grid">
               <label>
@@ -395,7 +435,7 @@ export default function App() {
                 />
               </label>
               <label>
-                Deadline (+s)
+                Deadline (+s from now)
                 <input
                   type="number"
                   value={form.deadline_offset}
@@ -405,7 +445,7 @@ export default function App() {
                 />
               </label>
               <label>
-                Source
+                Source gateway
                 <select
                   value={form.source_id}
                   onChange={(e) => setForm({ ...form, source_id: e.target.value })}
@@ -431,12 +471,12 @@ export default function App() {
                 </select>
               </label>
             </div>
-            <button className="primary wide" disabled={busy} onClick={submit}>
+            <button type="button" className="primary wide" disabled={busy} onClick={submit}>
               Place & run image batch
             </button>
           </section>
 
-          <section className="card">
+          <section className="panel">
             <h2>Jobs</h2>
             <div className="job-list">
               {jobs.length === 0 && <p className="muted small">No jobs yet.</p>}
@@ -464,10 +504,10 @@ export default function App() {
         </aside>
 
         <aside className="side right">
-          <section className="card">
+          <section className="panel">
             <h2>Inspector</h2>
             {!selectedNode && !selectedStation && !selectedJob && (
-              <p className="muted small">Select a node, station, or job.</p>
+              <p className="muted small">Select a job, node, or ground station.</p>
             )}
             {selectedJob && (
               <div className="inspect">
@@ -476,19 +516,34 @@ export default function App() {
                   State <strong>{selectedJob.state}</strong>
                   {selectedJob.fail_reason ? ` — ${selectedJob.fail_reason}` : ''}
                 </p>
-                <p className="muted small">
-                  Assigned {selectedJob.assigned_node_id} · deadline{' '}
-                  {fmt(selectedJob.deadline_at ?? undefined, 0)}s
-                </p>
+                <div className="kv">
+                  <div>
+                    <span className="lbl">Assigned</span>
+                    <strong>{selectedJob.assigned_node_id || '—'}</strong>
+                  </div>
+                  <div>
+                    <span className="lbl">Deadline</span>
+                    <strong>{fmt(selectedJob.deadline_at ?? undefined, 0)}s</strong>
+                  </div>
+                  <div>
+                    <span className="lbl">Est. complete</span>
+                    <strong>{fmt(selectedPlan?.estimated_completion, 1)}s</strong>
+                  </div>
+                  <div>
+                    <span className="lbl">Actual</span>
+                    <strong>{fmt(selectedJob.actual_completion ?? undefined, 1)}s</strong>
+                  </div>
+                  <div>
+                    <span className="lbl">Est. cost</span>
+                    <strong>${fmt(selectedPlan?.estimated_cost, 4)}</strong>
+                  </div>
+                  <div>
+                    <span className="lbl">Workload</span>
+                    <strong>{bytes(selectedJob.input_bytes)} → batch</strong>
+                  </div>
+                </div>
                 {selectedPlan && (
                   <>
-                    <p>
-                      Est. complete {fmt(selectedPlan.estimated_completion, 1)}s · cost $
-                      {fmt(selectedPlan.estimated_cost, 4)}
-                    </p>
-                    <p>
-                      Actual complete {fmt(selectedJob.actual_completion ?? undefined, 1)}s
-                    </p>
                     <h3>Routes</h3>
                     <ol className="hops">
                       {selectedPlan.input_route.map((h, i) => (
@@ -513,19 +568,31 @@ export default function App() {
                 {bc && (
                   <div className="baseline">
                     <h3>vs cheapest-node baseline</h3>
-                    <p>
-                      Chosen <strong>{bc.chosen_node_id}</strong> $
-                      {fmt(bc.chosen_cost, 4)} / {fmt(bc.chosen_completion, 0)}s
-                    </p>
-                    <p>
-                      Baseline <strong>{bc.baseline_node_id}</strong>{' '}
-                      {bc.baseline_feasible
-                        ? `$${fmt(bc.baseline_cost, 4)} / ${fmt(bc.baseline_completion, 0)}s`
-                        : 'infeasible'}
-                    </p>
+                    <div className="kv">
+                      <div>
+                        <span className="lbl">Chosen</span>
+                        <strong>
+                          {bc.chosen_node_id}
+                          <br />${fmt(bc.chosen_cost, 4)} / {fmt(bc.chosen_completion, 0)}s
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="lbl">Baseline</span>
+                        <strong>
+                          {bc.baseline_node_id}
+                          <br />
+                          {bc.baseline_feasible
+                            ? `$${fmt(bc.baseline_cost, 4)} / ${fmt(bc.baseline_completion, 0)}s`
+                            : 'infeasible'}
+                        </strong>
+                      </div>
+                    </div>
                     <div className="reasons">
                       {bc.reason_codes.map((r) => (
-                        <span key={r} className="tag">
+                        <span
+                          key={r}
+                          className={`tag ${r.includes('deadline') || r.includes('misses') ? 'sim' : ''}`}
+                        >
                           {r}
                         </span>
                       ))}
@@ -535,14 +602,16 @@ export default function App() {
                 {selectedJob.state !== 'completed' &&
                   selectedJob.state !== 'failed' &&
                   selectedJob.state !== 'canceled' && (
-                    <div className="row">
+                    <div className="row" style={{ marginTop: '0.55rem' }}>
                       <button
+                        type="button"
                         disabled={busy}
                         onClick={() => run(() => api.replanJob(selectedJob.id))}
                       >
                         Replan routes
                       </button>
                       <button
+                        type="button"
                         className="danger"
                         disabled={busy}
                         onClick={() => run(() => api.cancelJob(selectedJob.id))}
@@ -561,10 +630,15 @@ export default function App() {
                   {selectedNode.price_per_work}/work
                 </p>
                 <p className="muted small">
-                  Pricing/capacity: simulated
-                  {selectedNode.kind === 'orbital'
-                    ? ' · position: real TLE/SGP4'
-                    : ' · site: configured'}
+                  <span className="tag sim">sim</span> pricing & capacity
+                  {selectedNode.kind === 'orbital' ? (
+                    <>
+                      {' '}
+                      · <span className="tag real">real</span> TLE/SGP4 position
+                    </>
+                  ) : (
+                    <> · configured site</>
+                  )}
                 </p>
               </div>
             )}
@@ -573,30 +647,29 @@ export default function App() {
                 <h3>{selectedStation.name}</h3>
                 <p className="muted small">
                   {selectedStation.lat.toFixed(2)}°, {selectedStation.lon.toFixed(2)}° ·
-                  configured site · contacts computed from real geometry
+                  configured site · contacts from real geometry + elevation rules
                 </p>
               </div>
             )}
           </section>
 
-          <section className="card">
+          <section className="panel">
             <h2>Disrupt link</h2>
-            <select
-              id="disrupt-link"
-              defaultValue=""
-              onChange={() => undefined}
-            >
+            <p className="muted small">Simulated outage / throttle — does not change orbits.</p>
+            <select id="disrupt-link" defaultValue="">
               <option value="" disabled>
                 Select link
               </option>
               {links.map((L) => (
                 <option key={L.id} value={L.id}>
-                  {L.id} ({L.kind}) {L.up ? 'UP' : 'DOWN'}
+                  {L.kind} · {L.endpoint_a.replace(/^(gs-|orbital-|earth-)/, '')}↔
+                  {L.endpoint_b.replace(/^(gs-|orbital-|earth-)/, '')} {L.up ? 'UP' : 'DOWN'}
                 </option>
               ))}
             </select>
-            <div className="row">
+            <div className="row" style={{ marginTop: '0.45rem' }}>
               <button
+                type="button"
                 className="danger"
                 disabled={busy}
                 onClick={() => {
@@ -608,6 +681,7 @@ export default function App() {
                 Force down
               </button>
               <button
+                type="button"
                 disabled={busy}
                 onClick={() => {
                   const el = document.getElementById('disrupt-link') as HTMLSelectElement
@@ -618,6 +692,7 @@ export default function App() {
                 20% bandwidth
               </button>
               <button
+                type="button"
                 disabled={busy}
                 onClick={() => {
                   const el = document.getElementById('disrupt-link') as HTMLSelectElement
@@ -630,25 +705,25 @@ export default function App() {
             </div>
           </section>
 
-          <section className="card">
+          <section className="panel">
             <h2>Metrics</h2>
             <div className="metrics">
               <div>
-                <span className="muted">Links up</span>
+                <span className="lbl">Links up</span>
                 <strong>
                   {metrics?.links_up ?? 0}/{metrics?.links_total ?? 0}
                 </strong>
               </div>
               <div>
-                <span className="muted">Active xfers</span>
+                <span className="lbl">Active xfers</span>
                 <strong>{metrics?.active_transfers ?? 0}</strong>
               </div>
               <div>
-                <span className="muted">Mean delay</span>
+                <span className="lbl">Mean delay</span>
                 <strong>{fmt(metrics?.mean_completion_delay_s, 1)}s</strong>
               </div>
               <div>
-                <span className="muted">Cost Δ vs baseline</span>
+                <span className="lbl">Cost Δ vs baseline</span>
                 <strong>${fmt(metrics?.mean_cost_vs_baseline, 4)}</strong>
               </div>
             </div>
@@ -659,24 +734,31 @@ export default function App() {
                 </span>
               ))}
             </div>
-            <p className="muted small reality-line">
-              Reality: {reality.ephemeris || 'tle'} · {reality.contacts || 'contacts'} ·{' '}
+            <p className="muted small" style={{ marginTop: '0.55rem' }}>
+              {reality.ephemeris || 'tle'} · {reality.contacts || 'contacts'} ·{' '}
               {reality.compute_capacity_pricing || 'sim compute'}
             </p>
           </section>
 
-          <section className="card events">
+          <section className="panel events">
             <h2>Timeline</h2>
             <ul>
               {events
                 .slice()
                 .reverse()
-                .slice(0, 24)
+                .slice(0, 28)
                 .map((ev) => (
                   <li key={ev.id}>
-                    <span className="muted">{fmt(ev.t, 0)}s</span> {ev.type}
+                    <span className="t">{fmt(ev.t, 0)}s</span>
+                    <span className="ty">{ev.type}</span>
                   </li>
                 ))}
+              {events.length === 0 && (
+                <li>
+                  <span className="t">—</span>
+                  <span className="ty muted">Waiting for events…</span>
+                </li>
+              )}
             </ul>
           </section>
         </aside>

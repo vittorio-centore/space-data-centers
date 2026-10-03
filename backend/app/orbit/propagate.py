@@ -9,6 +9,7 @@ from typing import Optional
 
 from sgp4.api import Satrec, jday
 from sgp4.conveniences import sat_epoch_datetime
+from sgp4.propagation import gstime
 
 from app.models.types import OrbitalRecord
 
@@ -30,12 +31,23 @@ def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float) -> tuple[floa
 
 
 def eci_to_ecef(x: float, y: float, z: float, dt: datetime) -> tuple[float, float, float]:
-    """Approximate TEME/ECI → ECEF via GMST (adequate for contact geometry MVP)."""
-    jd = _julian_date(dt)
-    gmst = _gmst_rad(jd)
-    cos_g = math.cos(gmst)
-    sin_g = math.sin(gmst)
-    # TEME km → m then rotate
+    """TEME (SGP4) → ECEF via Vallado GMST from the sgp4 package.
+
+    Rotates TEME km coordinates about Z by Greenwich sidereal time.
+    Polar motion / LOD are omitted (sub-km class effect for contact MVP).
+    """
+    dt = dt.astimezone(timezone.utc)
+    jd, fr = jday(
+        dt.year,
+        dt.month,
+        dt.day,
+        dt.hour,
+        dt.minute,
+        dt.second + dt.microsecond * 1e-6,
+    )
+    theta = gstime(jd + fr)  # radians, consistent with SGP4 library
+    cos_g = math.cos(theta)
+    sin_g = math.sin(theta)
     xe = (x * cos_g + y * sin_g) * 1000.0
     ye = (-x * sin_g + y * cos_g) * 1000.0
     ze = z * 1000.0
@@ -46,7 +58,7 @@ def ecef_to_lla(x: float, y: float, z: float) -> tuple[float, float, float]:
     lon = math.atan2(y, x)
     p = math.sqrt(x * x + y * y)
     lat = math.atan2(z, p * (1 - WGS84_E2))
-    for _ in range(6):
+    for _ in range(8):
         sin_lat = math.sin(lat)
         n = WGS84_A / math.sqrt(1 - WGS84_E2 * sin_lat * sin_lat)
         alt = p / math.cos(lat) - n
@@ -71,7 +83,6 @@ def elevation_deg(
     rx, ry, rz = sat_ecef_m[0] - sx, sat_ecef_m[1] - sy, sat_ecef_m[2] - sz
     lat = math.radians(station_lat)
     lon = math.radians(station_lon)
-    # ENU up vector
     upx = math.cos(lat) * math.cos(lon)
     upy = math.cos(lat) * math.sin(lon)
     upz = math.sin(lat)
@@ -83,23 +94,6 @@ def elevation_deg(
     return math.degrees(math.asin(sin_el))
 
 
-def _julian_date(dt: datetime) -> float:
-    dt = dt.astimezone(timezone.utc)
-    jd, fr = jday(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond * 1e-6)
-    return jd + fr
-
-
-def _gmst_rad(jd: float) -> float:
-    t = (jd - 2451545.0) / 36525.0
-    gmst_deg = (
-        280.46061837
-        + 360.98564736629 * (jd - 2451545.0)
-        + 0.000387933 * t * t
-        - t * t * t / 38710000.0
-    )
-    return math.radians(gmst_deg % 360.0)
-
-
 class OrbitEngine:
     """Propagates satellites from cached real TLEs via SGP4."""
 
@@ -108,8 +102,7 @@ class OrbitEngine:
         self.epoch_utc = epoch_utc
         self._sats: dict[str, Satrec] = {}
         for r in records:
-            sat = Satrec.twoline2rv(r.tle_line1, r.tle_line2)
-            self._sats[r.id] = sat
+            self._sats[r.id] = Satrec.twoline2rv(r.tle_line1, r.tle_line2)
 
     def datetime_at(self, t_s: float) -> datetime:
         from datetime import timedelta
@@ -119,7 +112,9 @@ class OrbitEngine:
     def position_eci_km(self, record_id: str, t_s: float) -> Optional[tuple[float, float, float]]:
         sat = self._sats[record_id]
         dt = self.datetime_at(t_s)
-        jd, fr = jday(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond * 1e-6)
+        jd, fr = jday(
+            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond * 1e-6
+        )
         err, r, _v = sat.sgp4(jd, fr)
         if err != 0:
             return None
@@ -137,6 +132,20 @@ class OrbitEngine:
             return None
         lat, lon, alt = ecef_to_lla(*ecef)
         return {"lat": lat, "lon": lon, "alt_km": alt / 1000.0}
+
+    def ground_track(
+        self, record_id: str, t0: float, duration_s: float = 5400.0, step_s: float = 60.0
+    ) -> list[dict[str, float]]:
+        """Sample LLA points for orbit trail visualization."""
+        pts: list[dict[str, float]] = []
+        t = t0
+        end = t0 + duration_s
+        while t <= end:
+            lla = self.position_lla(record_id, t)
+            if lla:
+                pts.append(lla)
+            t += step_s
+        return pts
 
 
 def load_tle_file(path: Path, source: str = "celestrak-cached") -> list[OrbitalRecord]:
@@ -179,7 +188,6 @@ def fetch_or_use_cached(cache_path: Path, fetch_url: Optional[str] = None) -> li
             resp = httpx.get(fetch_url, timeout=10.0)
             if resp.status_code == 200 and "1 " in resp.text:
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
-                # Keep only our three NORADs if cache already defines selection
                 cache_path.write_text(resp.text)
         except Exception:
             pass
