@@ -47,11 +47,15 @@ const submitResult = {
 
 const marketReport = {
   stolen_windows: 0,
-  deadline_hit_rate: { alpha: 0.5, beta: 1 },
+  deadline_hit_rate: { alpha: 0.5, beta: 1, gamma: 0.75, delta: 0.25 },
   cost_reservation_aware: 2,
   cost_global_cheapest_ignores_tenants: 1,
-  seed: 11,
+  hit_rate_equity: 0.25,
+  min_tenant_hit_rate: 0.25,
+  fairness_beats_ignore_tenants: true,
+  seed: 7,
   scenario_id: 'mvp-thesis',
+  tenants: ['alpha', 'beta', 'gamma', 'delta'],
 }
 
 const api = {
@@ -62,11 +66,15 @@ const api = {
     { id: 'local', display_name: 'Local default' },
     { id: 'alpha', display_name: 'Tenant A' },
     { id: 'beta', display_name: 'Tenant B' },
+    { id: 'gamma', display_name: 'Tenant C' },
+    { id: 'delta', display_name: 'Tenant D' },
   ]),
   ensureDemoTenants: vi.fn(async () => [
     { id: 'local', display_name: 'Local default' },
     { id: 'alpha', display_name: 'Tenant A' },
     { id: 'beta', display_name: 'Tenant B' },
+    { id: 'gamma', display_name: 'Tenant C' },
+    { id: 'delta', display_name: 'Tenant D' },
   ]),
   setActiveTenant: vi.fn(),
   submitJob: vi.fn(async () => submitResult),
@@ -142,8 +150,10 @@ describe('dashboard wiring', () => {
     expect(api.setActiveTenant).toHaveBeenCalledWith('beta')
     fireEvent.click(screen.getByTestId('run-market-day'))
     await waitFor(() => expect(api.runMarketDay).toHaveBeenCalled())
-    expect(api.runMarketDay).toHaveBeenCalledWith({ seed: 11, n_per_tenant: 3, max_steps: 2000 })
+    expect(api.runMarketDay).toHaveBeenCalledWith({ seed: 7, n_per_tenant: 4, max_steps: 2500 })
     await waitFor(() => expect(screen.getByTestId('market-report')).toBeTruthy())
     expect(screen.getByTestId('market-report').textContent).toContain('Stolen windows')
+    expect(screen.getByTestId('market-report').textContent).toContain('On time C')
+    expect(screen.getByTestId('market-report').textContent).toContain('On time D')
   })
 })

@@ -134,9 +134,9 @@ export const api = {
 
   runMarketDay: async (body?: { seed?: number; n_per_tenant?: number; max_steps?: number }) => {
     const payload = {
-      seed: body?.seed ?? 11,
-      n_per_tenant: body?.n_per_tenant ?? 3,
-      max_steps: body?.max_steps ?? 2000,
+      seed: body?.seed ?? 7,
+      n_per_tenant: body?.n_per_tenant ?? 4,
+      max_steps: body?.max_steps ?? 2500,
     }
     const report =
       (await reqOptional<MarketDayReport>('/evaluations/market-day', {

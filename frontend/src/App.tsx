@@ -27,6 +27,7 @@ import {
   jobSubmitBody,
   jobTransferProgress,
   quotaRemaining,
+  tenantOptionLabel,
   tenantShort,
 } from './jobUi'
 import './App.css'
@@ -90,6 +91,8 @@ export default function App() {
     deadline_offset: 3600,
     source_id: 'gs-ashburn',
     destination_id: 'gs-ashburn',
+    allow_split: false,
+    disruption_policy: 'node_fixed' as 'node_fixed' | 'migrate_on_disruption',
   })
   const refreshTimer = useRef<number | null>(null)
   const selectedJobIdRef = useRef<string | null>(null)
@@ -218,7 +221,7 @@ export default function App() {
         setTenants(list)
         setPlatformReady(true)
       }
-      const report = await api.runMarketDay({ seed: 11, n_per_tenant: 3, max_steps: 2000 })
+      const report = await api.runMarketDay({ seed: 7, n_per_tenant: 4, max_steps: 2500 })
       setMarketReport(report)
       await applySnapshot()
       await refreshTenants()
@@ -685,7 +688,7 @@ export default function App() {
           <section className="section sky-section" data-testid="shared-sky">
             <h2>Shared sky</h2>
             <p className="muted adv-hint">
-              Hard reservations on ISS and contact windows. Tenant A and B share the same orbit
+              Hard reservations on ISS and contact windows. Tenants A–D share the same orbit
               clock — whoever booked a slot keeps it.
             </p>
             <label className="adv-label">
@@ -702,14 +705,12 @@ export default function App() {
                       { id: 'local', display_name: 'Local default' },
                       { id: 'alpha', display_name: 'Tenant A' },
                       { id: 'beta', display_name: 'Tenant B' },
+                      { id: 'gamma', display_name: 'Tenant C' },
+                      { id: 'delta', display_name: 'Tenant D' },
                     ]
                 ).map((t) => (
                   <option key={t.id} value={t.id}>
-                    {t.id === 'alpha'
-                      ? 'Tenant A'
-                      : t.id === 'beta'
-                        ? 'Tenant B'
-                        : t.display_name || t.name || t.id}
+                    {tenantOptionLabel(t.id, t.display_name || t.name)}
                   </option>
                 ))}
               </select>
@@ -780,11 +781,11 @@ export default function App() {
             {marketMetrics ? (
               <div className="eval-report market-report" data-testid="market-report">
                 <p className="muted" style={{ margin: '0 0 0.35rem', fontSize: '0.85rem' }}>
-                  Market day
+                  Market day · four tenants
                   {marketReport?.seed != null ? ` · seed ${marketReport.seed}` : ''}
                   {marketReport?.scenario_id ? ` · ${marketReport.scenario_id}` : ''}
                 </p>
-                <div className="market-metrics">
+                <div className="market-metrics market-metrics-four">
                   <div>
                     <span className="summary-label">On time A</span>
                     <span className="summary-value">
@@ -802,6 +803,22 @@ export default function App() {
                     </span>
                   </div>
                   <div>
+                    <span className="summary-label">On time C</span>
+                    <span className="summary-value">
+                      {marketMetrics.hitC == null
+                        ? '—'
+                        : `${fmt(marketMetrics.hitC * 100, 0)}%`}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="summary-label">On time D</span>
+                    <span className="summary-value">
+                      {marketMetrics.hitD == null
+                        ? '—'
+                        : `${fmt(marketMetrics.hitD * 100, 0)}%`}
+                    </span>
+                  </div>
+                  <div>
                     <span className="summary-label">Stolen windows</span>
                     <span className="summary-value">{marketMetrics.stolen}</span>
                   </div>
@@ -810,6 +827,23 @@ export default function App() {
                     <span className="summary-value">
                       ${fmt(marketMetrics.costAware, 3)} / $
                       {fmt(marketMetrics.costGlobal, 3)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="summary-label">Hit-rate equity</span>
+                    <span className="summary-value">
+                      {marketMetrics.equity == null
+                        ? '—'
+                        : fmt(marketMetrics.equity, 2)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="summary-label">Min tenant hit</span>
+                    <span className="summary-value">
+                      {marketMetrics.minHit == null
+                        ? '—'
+                        : `${fmt(marketMetrics.minHit * 100, 0)}%`}
+                      {marketMetrics.fairnessBeats ? ' · beats ignore' : ''}
                     </span>
                   </div>
                 </div>
@@ -985,7 +1019,10 @@ export default function App() {
                           {h.from_id} → {h.to_id}
                         </li>
                       ))}
-                      <li>Compute on {selectedPlan.compute_node_id}</li>
+                      <li>
+                        Compute on {selectedPlan.compute_node_id}
+                        {selectedPlan.is_split ? ' · split' : ''}
+                      </li>
                       {selectedPlan.output_route.map((h, i) => (
                         <li key={`out-${i}`}>
                           {h.from_id} → {h.to_id}
@@ -1072,9 +1109,43 @@ export default function App() {
                 </p>
 
                 <p className="muted adv-hint">
-                  Tenant A/B, quotas, bookings, and market day live in Shared sky above. Demo
-                  keys <code className="inline-code">sdc-alpha</code> /{' '}
-                  <code className="inline-code">sdc-beta</code>.
+                  Tenants A–D, quotas, bookings, and market day live in Shared sky above. Demo
+                  keys <code className="inline-code">sdc-alpha</code>…{' '}
+                  <code className="inline-code">sdc-delta</code>.
+                </p>
+
+                <label className="adv-check">
+                  <input
+                    type="checkbox"
+                    data-testid="allow-split"
+                    checked={form.allow_split}
+                    disabled={busy}
+                    onChange={(e) => setForm({ ...form, allow_split: e.target.checked })}
+                  />
+                  Allow split across nodes
+                </label>
+                <label className="adv-label">
+                  Disruption policy
+                  <select
+                    data-testid="disruption-policy"
+                    value={form.disruption_policy}
+                    disabled={busy}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        disruption_policy: e.target.value as
+                          | 'node_fixed'
+                          | 'migrate_on_disruption',
+                      })
+                    }
+                  >
+                    <option value="node_fixed">node_fixed</option>
+                    <option value="migrate_on_disruption">migrate_on_disruption</option>
+                  </select>
+                </label>
+                <p className="muted adv-hint">
+                  Split and migrate stay off unless you opt in here. Migrate only when the
+                  workload is checkpointable.
                 </p>
 
                 <div className="adv-row">

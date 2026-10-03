@@ -14,6 +14,10 @@ export type JobForm = {
   deadline_offset: number
   source_id: string
   destination_id: string
+  /** Advanced: opt-in planner split across compatible nodes. */
+  allow_split?: boolean
+  /** Advanced: migrate_on_disruption only when checkpointable. */
+  disruption_policy?: 'node_fixed' | 'migrate_on_disruption'
 }
 
 export function jobTransferProgress(job: Job, transfers: Transfer[]): number | null {
@@ -47,7 +51,16 @@ export function etaSeconds(job: Job, plan: Plan | null, t: number): number | nul
 }
 
 export function jobSubmitBody(form: JobForm, t: number) {
-  return {
+  const body: {
+    input_bytes: number
+    output_bytes: number
+    work: number
+    deadline_at: number
+    source_id: string
+    destination_id: string
+    allow_split?: boolean
+    disruption_policy?: 'node_fixed' | 'migrate_on_disruption'
+  } = {
     input_bytes: Math.round(form.input_mb * 1_000_000),
     output_bytes: Math.round(form.output_mb * 1_000_000),
     work: form.work,
@@ -55,6 +68,11 @@ export function jobSubmitBody(form: JobForm, t: number) {
     source_id: form.source_id,
     destination_id: form.destination_id,
   }
+  if (form.allow_split) body.allow_split = true
+  if (form.disruption_policy && form.disruption_policy !== 'node_fixed') {
+    body.disruption_policy = form.disruption_policy
+  }
+  return body
 }
 
 export function deriveMarketMetrics(report: MarketDayReport | null) {
@@ -63,12 +81,20 @@ export function deriveMarketMetrics(report: MarketDayReport | null) {
   const fromRows = Object.fromEntries(
     (report.per_tenant || []).map((r) => [r.tenant_id, r.deadline_hit_rate]),
   )
+  const hit = (id: string, alias?: string) =>
+    rates[id] ?? (alias ? rates[alias] : undefined) ?? fromRows[id] ?? (alias ? fromRows[alias] : undefined)
   return {
-    hitA: rates.alpha ?? rates.A ?? fromRows.alpha ?? fromRows.A,
-    hitB: rates.beta ?? rates.B ?? fromRows.beta ?? fromRows.B,
+    hitA: hit('alpha', 'A'),
+    hitB: hit('beta', 'B'),
+    hitC: hit('gamma', 'C'),
+    hitD: hit('delta', 'D'),
     stolen: report.stolen_windows,
     costAware: report.cost_reservation_aware,
     costGlobal: report.cost_global_cheapest_ignores_tenants,
+    equity: report.hit_rate_equity,
+    minHit: report.min_tenant_hit_rate,
+    fairnessBeats: report.fairness_beats_ignore_tenants,
+    tenants: report.tenants || ['alpha', 'beta', 'gamma', 'delta'],
   }
 }
 
@@ -76,7 +102,17 @@ export function tenantShort(id: string | null | undefined): string {
   if (!id || id === 'local') return 'Local'
   if (id === 'alpha') return 'A'
   if (id === 'beta') return 'B'
+  if (id === 'gamma') return 'C'
+  if (id === 'delta') return 'D'
   return id
+}
+
+export function tenantOptionLabel(id: string, display?: string | null): string {
+  if (id === 'alpha') return 'Tenant A'
+  if (id === 'beta') return 'Tenant B'
+  if (id === 'gamma') return 'Tenant C'
+  if (id === 'delta') return 'Tenant D'
+  return display || id
 }
 
 export function shortNodeName(id: string): string {

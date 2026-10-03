@@ -511,6 +511,36 @@ select:focus {
   gap: 0.45rem 0.65rem;
 }
 
+.market-metrics-four {
+  grid-template-columns: 1fr 1fr;
+}
+
+.adv-check {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.55rem 0 0.35rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.adv-check input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.tenant-mark.tenant-gamma {
+  color: #3d5c45;
+  border-color: rgba(61, 92, 69, 0.28);
+  background: rgba(61, 92, 69, 0.06);
+}
+
+.tenant-mark.tenant-delta {
+  color: #5a4570;
+  border-color: rgba(90, 69, 112, 0.28);
+  background: rgba(90, 69, 112, 0.06);
+}
+
 .market-metrics > div {
   display: flex;
   flex-direction: column;

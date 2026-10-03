@@ -33,13 +33,13 @@ describe('runMarketDay', () => {
       }),
     })
     vi.stubGlobal('fetch', fetchMock)
-    const report = await api.runMarketDay({ seed: 11, n_per_tenant: 3, max_steps: 2000 })
+    const report = await api.runMarketDay({ seed: 7, n_per_tenant: 4, max_steps: 2500 })
     expect(report.stolen_windows).toBe(0)
     expect(fetchMock).toHaveBeenCalled()
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toContain('/evaluations/market-day')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(init.body)).toEqual({ seed: 11, n_per_tenant: 3, max_steps: 2000 })
+    expect(JSON.parse(init.body)).toEqual({ seed: 7, n_per_tenant: 4, max_steps: 2500 })
     vi.unstubAllGlobals()
   })
 })

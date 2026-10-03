@@ -88,19 +88,29 @@ describe('etaSeconds', () => {
 })
 
 describe('deriveMarketMetrics', () => {
-  it('reads per-tenant rates and stolen windows', () => {
+  it('reads four-tenant rates and fairness fields', () => {
     const report: MarketDayReport = {
       stolen_windows: 0,
       cost_reservation_aware: 1.2,
       cost_global_cheapest_ignores_tenants: 0.9,
-      deadline_hit_rate: { alpha: 0.5, beta: 1 },
+      deadline_hit_rate: { alpha: 0.5, beta: 1, gamma: 0.75, delta: 0.25 },
+      hit_rate_equity: 0.25,
+      min_tenant_hit_rate: 0.25,
+      fairness_beats_ignore_tenants: true,
+      tenants: ['alpha', 'beta', 'gamma', 'delta'],
     }
     expect(deriveMarketMetrics(report)).toEqual({
       hitA: 0.5,
       hitB: 1,
+      hitC: 0.75,
+      hitD: 0.25,
       stolen: 0,
       costAware: 1.2,
       costGlobal: 0.9,
+      equity: 0.25,
+      minHit: 0.25,
+      fairnessBeats: true,
+      tenants: ['alpha', 'beta', 'gamma', 'delta'],
     })
     expect(deriveMarketMetrics(null)).toBeNull()
   })
@@ -110,8 +120,53 @@ describe('control-plane helpers', () => {
   it('shortens tenant and node labels', () => {
     expect(tenantShort('alpha')).toBe('A')
     expect(tenantShort('beta')).toBe('B')
+    expect(tenantShort('gamma')).toBe('C')
+    expect(tenantShort('delta')).toBe('D')
     expect(tenantShort('local')).toBe('Local')
     expect(shortNodeName('orbital-iss-cheap')).toBe('ISS')
+  })
+
+  it('omits default split/migrate flags from submit body', () => {
+    expect(
+      jobSubmitBody(
+        {
+          input_mb: 1,
+          output_mb: 1,
+          work: 10,
+          deadline_offset: 100,
+          source_id: 'gs-ashburn',
+          destination_id: 'gs-ashburn',
+          allow_split: false,
+          disruption_policy: 'node_fixed',
+        },
+        0,
+      ),
+    ).toEqual({
+      input_bytes: 1_000_000,
+      output_bytes: 1_000_000,
+      work: 10,
+      deadline_at: 100,
+      source_id: 'gs-ashburn',
+      destination_id: 'gs-ashburn',
+    })
+    expect(
+      jobSubmitBody(
+        {
+          input_mb: 1,
+          output_mb: 1,
+          work: 10,
+          deadline_offset: 100,
+          source_id: 'gs-ashburn',
+          destination_id: 'gs-ashburn',
+          allow_split: true,
+          disruption_policy: 'migrate_on_disruption',
+        },
+        0,
+      ),
+    ).toMatchObject({
+      allow_split: true,
+      disruption_policy: 'migrate_on_disruption',
+    })
   })
 
   it('prefers reservations for bookings and surfaces ISS first', () => {
