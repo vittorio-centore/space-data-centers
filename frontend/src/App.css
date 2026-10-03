@@ -66,7 +66,7 @@
   min-height: 520px;
   border-radius: var(--radius);
   overflow: hidden;
-  background: #e7eef2;
+  background: #eef3f5;
   box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
@@ -162,6 +162,44 @@ select:focus {
   margin-top: 0.75rem;
 }
 
+.summary-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.summary-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.summary-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+}
+
+.summary-value {
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.summary-of {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .job-list {
   display: flex;
   flex-direction: column;
@@ -169,6 +207,70 @@ select:focus {
   max-height: 160px;
   overflow: auto;
   margin-bottom: 0.75rem;
+}
+
+.job-bar {
+  margin-top: 0.35rem;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(31, 36, 48, 0.08);
+  overflow: hidden;
+}
+
+.job-bar.tall {
+  height: 6px;
+  margin-top: 0.4rem;
+}
+
+.job-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 0.25s ease;
+}
+
+.progress-block {
+  margin: 0.55rem 0 0.35rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+.progress-head span:last-child {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.xfer-list {
+  list-style: none;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.xfer-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.xfer-list li span:last-child {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
 }
 
 .job-item {

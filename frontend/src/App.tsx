@@ -24,6 +24,49 @@ function bytes(n: number) {
   return `${n} B`
 }
 
+const STAGE_LABEL: Record<Job['state'], string> = {
+  submitted: 'Submitted',
+  planned: 'Planned',
+  input_transfer: 'Input transfer',
+  queued: 'Queued',
+  running: 'Computing',
+  output_transfer: 'Output transfer',
+  completed: 'Done',
+  failed: 'Failed',
+  canceled: 'Canceled',
+}
+
+function jobTransferProgress(job: Job, transfers: Transfer[]) {
+  const own = transfers.filter((t) => t.job_id === job.id)
+  if (own.length === 0) {
+    if (job.state === 'completed') return 100
+    if (job.state === 'running' || job.state === 'queued') return 50
+    if (job.state === 'output_transfer') return 75
+    return job.state === 'planned' || job.state === 'submitted' ? 0 : null
+  }
+  const relevant =
+    job.state === 'input_transfer'
+      ? own.filter((t) => t.direction === 'input')
+      : job.state === 'output_transfer'
+        ? own.filter((t) => t.direction === 'output')
+        : own
+  const list = relevant.length ? relevant : own
+  const total = list.reduce((s, t) => s + t.bytes_total, 0)
+  const sent = list.reduce((s, t) => s + t.bytes_sent, 0)
+  if (!total) return job.state === 'completed' ? 100 : 0
+  // Blend route progress with stage so compute shows mid-job progress.
+  const raw = (sent / total) * 100
+  if (job.state === 'running' || job.state === 'queued') return Math.max(raw, 55)
+  if (job.state === 'completed') return 100
+  return raw
+}
+
+function etaSeconds(job: Job, plan: Plan | null, t: number): number | null {
+  if (job.state === 'completed' || job.state === 'failed' || job.state === 'canceled') return null
+  if (!plan) return null
+  return Math.max(0, plan.estimated_completion - t)
+}
+
 export default function App() {
   const [nodes, setNodes] = useState<ComputeNode[]>([])
   const [stations, setStations] = useState<GroundStation[]>([])
@@ -237,6 +280,45 @@ export default function App() {
   const selectedJob = jobs.find((j) => j.id === selectedJobId) || null
   const bc = selectedPlan?.baseline_comparison
   const sortedJobs = [...jobs].sort((a, b) => b.submitted_at - a.submitted_at)
+  const simT = settings?.t ?? 0
+
+  const summary = useMemo(() => {
+    const done = jobs.filter((j) => j.state === 'completed')
+    let onTime = 0
+    for (const j of done) {
+      const finish = j.actual_completion
+      if (finish == null) continue
+      if (j.deadline_at == null || finish <= j.deadline_at) onTime += 1
+    }
+    let totalCost = 0
+    let baselineCost = 0
+    let costPairs = 0
+    for (const j of jobs) {
+      const plan = j.plan_id ? plans[j.plan_id] : null
+      const cost = j.actual_cost ?? plan?.estimated_cost
+      const base = plan?.baseline_comparison?.baseline_cost
+      if (cost != null) totalCost += cost
+      if (cost != null && base != null && plan?.baseline_comparison?.baseline_feasible) {
+        baselineCost += base
+        costPairs += 1
+      }
+    }
+    return {
+      jobsDone: done.length,
+      jobsTotal: jobs.length,
+      onTimePct: done.length ? (onTime / done.length) * 100 : null,
+      totalCost: jobs.length ? totalCost : null,
+      baselineCost: costPairs ? baselineCost : null,
+    }
+  }, [jobs, plans])
+
+  const selectedProgress = selectedJob
+    ? jobTransferProgress(selectedJob, transfers)
+    : null
+  const selectedEta = selectedJob ? etaSeconds(selectedJob, selectedPlan, simT) : null
+  const selectedTransfers = selectedJob
+    ? transfers.filter((t) => t.job_id === selectedJob.id)
+    : []
 
   return (
     <div className="app">
@@ -414,24 +496,60 @@ export default function App() {
 
           <section className="section">
             <h2>Jobs</h2>
+            <div className="summary-row" aria-label="Job summary">
+              <div>
+                <span className="summary-label">Done</span>
+                <span className="summary-value">
+                  {summary.jobsDone}
+                  <span className="summary-of">/{summary.jobsTotal}</span>
+                </span>
+              </div>
+              <div>
+                <span className="summary-label">On time</span>
+                <span className="summary-value">
+                  {summary.onTimePct == null ? '—' : `${fmt(summary.onTimePct, 0)}%`}
+                </span>
+              </div>
+              <div>
+                <span className="summary-label">Cost vs baseline</span>
+                <span className="summary-value">
+                  {summary.totalCost == null
+                    ? '—'
+                    : summary.baselineCost == null
+                      ? `$${fmt(summary.totalCost, 3)}`
+                      : `$${fmt(summary.totalCost, 3)} / $${fmt(summary.baselineCost, 3)}`}
+                </span>
+              </div>
+            </div>
             <div className="job-list">
               {sortedJobs.length === 0 && <p className="empty">No jobs yet.</p>}
-              {sortedJobs.map((j) => (
-                <button
-                  type="button"
-                  key={j.id}
-                  className={`job-item ${selectedJobId === j.id ? 'active' : ''}`}
-                  onClick={() => selectJob(j, j.plan_id ? plans[j.plan_id] : null)}
-                >
-                  <div className="job-top">
-                    <span>{j.id.slice(0, 12)}</span>
-                    <span className={`state state-${j.state}`}>{j.state.replace(/_/g, ' ')}</span>
-                  </div>
-                  <div className="muted" style={{ fontSize: '0.85rem' }}>
-                    {j.assigned_node_id || 'unassigned'} · {bytes(j.input_bytes)}
-                  </div>
-                </button>
-              ))}
+              {sortedJobs.map((j) => {
+                const pct = jobTransferProgress(j, transfers)
+                return (
+                  <button
+                    type="button"
+                    key={j.id}
+                    className={`job-item ${selectedJobId === j.id ? 'active' : ''}`}
+                    onClick={() => selectJob(j, j.plan_id ? plans[j.plan_id] : null)}
+                  >
+                    <div className="job-top">
+                      <span>{j.id.slice(0, 12)}</span>
+                      <span className={`state state-${j.state}`}>
+                        {STAGE_LABEL[j.state] || j.state}
+                      </span>
+                    </div>
+                    <div className="muted" style={{ fontSize: '0.85rem' }}>
+                      {j.assigned_node_id || 'unassigned'} · {bytes(j.input_bytes)}
+                      {pct != null ? ` · ${fmt(pct, 0)}%` : ''}
+                    </div>
+                    {pct != null && j.state !== 'completed' && j.state !== 'failed' && (
+                      <div className="job-bar" aria-hidden>
+                        <div className="job-bar-fill" style={{ width: `${Math.min(100, pct)}%` }} />
+                      </div>
+                    )}
+                  </button>
+                )
+              })}
             </div>
 
             {!selectedJob && <p className="empty">Select a job to see its plan.</p>}
@@ -440,9 +558,57 @@ export default function App() {
                 <p>
                   <strong>{selectedJob.assigned_node_id || 'Unassigned'}</strong>
                   {' · '}
-                  {selectedJob.state.replace(/_/g, ' ')}
+                  {STAGE_LABEL[selectedJob.state] || selectedJob.state}
                 </p>
+                <div className="progress-block">
+                  <div className="progress-head">
+                    <span>Progress</span>
+                    <span>
+                      {selectedProgress == null ? '—' : `${fmt(selectedProgress, 0)}%`}
+                      {selectedEta != null ? ` · ETA ${fmt(selectedEta, 0)} s` : ''}
+                    </span>
+                  </div>
+                  <div className="job-bar tall">
+                    <div
+                      className="job-bar-fill"
+                      style={{ width: `${Math.min(100, selectedProgress ?? 0)}%` }}
+                    />
+                  </div>
+                  {selectedTransfers.length > 0 && (
+                    <ul className="xfer-list">
+                      {selectedTransfers.map((tr) => {
+                        const p = tr.bytes_total
+                          ? (tr.bytes_sent / tr.bytes_total) * 100
+                          : 0
+                        return (
+                          <li key={tr.id}>
+                            <span>
+                              {tr.direction}: {tr.from_id} → {tr.to_id}
+                            </span>
+                            <span>
+                              {fmt(p, 0)}% · {tr.state}
+                            </span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
                 <dl>
+                  <dt>Stage</dt>
+                  <dd>{STAGE_LABEL[selectedJob.state] || selectedJob.state}</dd>
+                  <dt>Transferred</dt>
+                  <dd>
+                    {selectedProgress == null ? '—' : `${fmt(selectedProgress, 0)}%`}
+                  </dd>
+                  <dt>ETA</dt>
+                  <dd>
+                    {selectedJob.state === 'completed'
+                      ? 'Done'
+                      : selectedEta != null
+                        ? `${fmt(selectedEta, 0)} s`
+                        : '—'}
+                  </dd>
                   <dt>Estimated finish</dt>
                   <dd>
                     {selectedPlan
