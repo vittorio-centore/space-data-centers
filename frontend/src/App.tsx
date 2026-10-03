@@ -50,11 +50,11 @@ export default function App() {
   const selectedJobIdRef = useRef<string | null>(null)
   selectedJobIdRef.current = selectedJobId
 
-  const selectJob = useCallback((job: Job, plan?: Plan | null) => {
+  const selectJob = useCallback((job: Job, _plan?: Plan | null) => {
     setSelectedJobId(job.id)
     selectedJobIdRef.current = job.id
-    const nodeId = plan?.compute_node_id || job.assigned_node_id
-    if (nodeId) setSelectedId(nodeId)
+    // Do not auto-select globe nodes — keeps labels small/off until user clicks the globe
+    setSelectedId(null)
   }, [])
 
   const selectedPlan = useMemo(() => {
@@ -118,7 +118,7 @@ export default function App() {
             if (jobId) {
               setSelectedJobId(jobId)
               selectedJobIdRef.current = jobId
-              if (plan?.compute_node_id) setSelectedId(plan.compute_node_id)
+              setSelectedId(null)
             }
             scheduleRefresh()
           } else if (ev.type === 'job_state') {

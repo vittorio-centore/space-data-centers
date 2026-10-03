@@ -93,9 +93,9 @@ function TexturedEarth() {
       <sphereGeometry args={[R_EARTH, 72, 72]} />
       <meshStandardMaterial
         map={tex}
-        roughness={0.9}
+        roughness={0.92}
         metalness={0}
-        color="#dce6ec"
+        color="#eef3f6"
       />
     </mesh>
   )
@@ -112,13 +112,23 @@ function Earth() {
 function MarkerLabel({ text }: { text: string }) {
   return (
     <Html
-      distanceFactor={14}
+      distanceFactor={32}
       center
       pointerEvents="none"
       zIndexRange={[1, 0]}
-      style={{ pointerEvents: 'none' }}
+      style={{ pointerEvents: 'none', transform: 'translate3d(0,0,0)' }}
     >
-      <div className="globe-label" style={{ pointerEvents: 'none' }}>
+      <div
+        className="globe-label"
+        style={{
+          pointerEvents: 'none',
+          fontSize: '9px',
+          padding: '1px 5px',
+          maxWidth: '88px',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
         {text}
       </div>
     </Html>
