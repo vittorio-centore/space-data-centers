@@ -1,4 +1,11 @@
-import type { Job, MarketDayReport, Plan, Transfer } from './api'
+import type {
+  Job,
+  MarketDayReport,
+  Plan,
+  QuotaSnapshot,
+  Reservation,
+  Transfer,
+} from './api'
 
 export type JobForm = {
   input_mb: number
@@ -62,5 +69,102 @@ export function deriveMarketMetrics(report: MarketDayReport | null) {
     stolen: report.stolen_windows,
     costAware: report.cost_reservation_aware,
     costGlobal: report.cost_global_cheapest_ignores_tenants,
+  }
+}
+
+export function tenantShort(id: string | null | undefined): string {
+  if (!id || id === 'local') return 'Local'
+  if (id === 'alpha') return 'A'
+  if (id === 'beta') return 'B'
+  return id
+}
+
+export function shortNodeName(id: string): string {
+  if (/iss/i.test(id)) return 'ISS'
+  if (id.startsWith('orbital-')) return id.slice('orbital-'.length)
+  if (id.startsWith('earth-')) return id.slice('earth-'.length)
+  return id
+}
+
+export type BookingRow = {
+  key: string
+  jobId: string
+  tenantId: string
+  resource: string
+  start: number
+  end: number
+  kind: 'compute' | 'window'
+}
+
+/** Who holds compute / contact windows — reservations first, else plans. */
+export function deriveBookings(
+  reservations: Reservation[] | null | undefined,
+  plans: Plan[],
+  simT: number,
+  limit = 8,
+): BookingRow[] {
+  const rows: BookingRow[] = []
+  if (reservations?.length) {
+    for (const r of reservations) {
+      rows.push({
+        key: `r-${r.job_id}-${r.node_id}-${r.start}`,
+        jobId: r.job_id,
+        tenantId: r.tenant_id || 'local',
+        resource: shortNodeName(r.node_id),
+        start: r.start,
+        end: r.end,
+        kind: 'compute',
+      })
+    }
+  } else {
+    for (const p of plans) {
+      if (p.compute_start == null || p.compute_end == null) continue
+      rows.push({
+        key: `p-${p.id}`,
+        jobId: p.job_id,
+        tenantId: p.tenant_id || 'local',
+        resource: shortNodeName(p.compute_node_id),
+        start: p.compute_start,
+        end: p.compute_end,
+        kind: 'compute',
+      })
+      for (const hop of [...(p.input_route || []), ...(p.output_route || [])]) {
+        rows.push({
+          key: `h-${p.id}-${hop.link_id || hop.from_id}-${hop.window_start}`,
+          jobId: p.job_id,
+          tenantId: p.tenant_id || 'local',
+          resource: `${shortNodeName(hop.from_id)}→${shortNodeName(hop.to_id)}`,
+          start: hop.window_start,
+          end: hop.window_end,
+          kind: 'window',
+        })
+      }
+    }
+  }
+  const active = rows.filter((r) => r.end >= simT - 1)
+  const pool = active.length ? active : rows
+  return pool
+    .slice()
+    .sort((a, b) => {
+      const aIss = /iss/i.test(a.resource) ? 0 : 1
+      const bIss = /iss/i.test(b.resource) ? 0 : 1
+      if (aIss !== bIss) return aIss - bIss
+      return a.start - b.start
+    })
+    .slice(0, limit)
+}
+
+export function quotaRemaining(quota?: QuotaSnapshot | Record<string, number> | null) {
+  if (!quota) return null
+  const jobsCap = Number(quota.quota_outstanding_jobs ?? 0)
+  const jobsUsed = Number(quota.outstanding_jobs ?? 0)
+  const reservedCap = Number(quota.quota_reserved_s ?? 0)
+  const reservedUsed = Number(quota.reserved_s ?? 0)
+  return {
+    jobsLeft: Math.max(0, jobsCap - jobsUsed),
+    jobsCap,
+    reservedLeft: Math.max(0, reservedCap - reservedUsed),
+    reservedCap,
+    reservedUsed,
   }
 }

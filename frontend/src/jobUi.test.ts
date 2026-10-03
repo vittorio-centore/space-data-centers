@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import type { Job, MarketDayReport, Plan, Transfer } from './api'
-import { deriveMarketMetrics, etaSeconds, jobSubmitBody, jobTransferProgress } from './jobUi'
+import type { Job, MarketDayReport, Plan, Reservation, Transfer } from './api'
+import {
+  deriveBookings,
+  deriveMarketMetrics,
+  etaSeconds,
+  jobSubmitBody,
+  jobTransferProgress,
+  quotaRemaining,
+  shortNodeName,
+  tenantShort,
+} from './jobUi'
 
 const job = (state: Job['state'], extra: Partial<Job> = {}): Job =>
   ({
@@ -94,5 +103,72 @@ describe('deriveMarketMetrics', () => {
       costGlobal: 0.9,
     })
     expect(deriveMarketMetrics(null)).toBeNull()
+  })
+})
+
+describe('control-plane helpers', () => {
+  it('shortens tenant and node labels', () => {
+    expect(tenantShort('alpha')).toBe('A')
+    expect(tenantShort('beta')).toBe('B')
+    expect(tenantShort('local')).toBe('Local')
+    expect(shortNodeName('orbital-iss-cheap')).toBe('ISS')
+  })
+
+  it('prefers reservations for bookings and surfaces ISS first', () => {
+    const reservations: Reservation[] = [
+      {
+        job_id: 'j2',
+        tenant_id: 'beta',
+        node_id: 'earth-us-east',
+        start: 10,
+        end: 20,
+      },
+      {
+        job_id: 'j1',
+        tenant_id: 'alpha',
+        node_id: 'orbital-iss-cheap',
+        start: 30,
+        end: 40,
+      },
+    ]
+    const rows = deriveBookings(reservations, [], 0, 8)
+    expect(rows[0].resource).toBe('ISS')
+    expect(rows[0].tenantId).toBe('alpha')
+    expect(rows).toHaveLength(2)
+  })
+
+  it('falls back to plans when reservations are empty', () => {
+    const plans = [
+      {
+        id: 'p1',
+        job_id: 'j1',
+        tenant_id: 'beta',
+        compute_node_id: 'orbital-iss-cheap',
+        compute_start: 100,
+        compute_end: 110,
+        input_route: [],
+        output_route: [],
+      },
+    ] as Plan[]
+    const rows = deriveBookings([], plans, 50, 4)
+    expect(rows[0]).toMatchObject({ tenantId: 'beta', resource: 'ISS', start: 100 })
+  })
+
+  it('computes remaining quota', () => {
+    expect(
+      quotaRemaining({
+        outstanding_jobs: 2,
+        quota_outstanding_jobs: 64,
+        reserved_s: 5,
+        quota_reserved_s: 100,
+      }),
+    ).toEqual({
+      jobsLeft: 62,
+      jobsCap: 64,
+      reservedLeft: 95,
+      reservedCap: 100,
+      reservedUsed: 5,
+    })
+    expect(quotaRemaining(null)).toBeNull()
   })
 })

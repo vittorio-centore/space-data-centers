@@ -1490,6 +1490,10 @@ class SimWorld:
             "plans": [p.model_dump() for p in self.plans.values()],
             "transfers": [t.model_dump() for t in self.transfers.values()],
             "workers": [w.model_dump() for w in self.workers.values()],
+            "reservations": [r.model_dump() for r in self.reservations],
+            "link_reservations": [r.model_dump() for r in self.link_reservations],
+            "quotas": {tid: self.quota_snapshot(tid) for tid in self.tenants},
+            "stolen_windows": self.stolen_windows,
             "reality": {
                 "ephemeris": "real_tle_sgp4",
                 "contacts": "computed_from_real_geometry",

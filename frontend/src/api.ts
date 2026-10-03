@@ -1,9 +1,9 @@
 const API = '/api'
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api-ws/ws`
 
-/** Active tenant context for platform control-plane calls (header X-Tenant-Id). */
-let activeTenantId: string | null = null
-let activeTenantKey: string | null = null
+/** Active tenant context for platform control-plane calls (header X-Tenant-Id / X-API-Key). */
+let activeTenantId: string | null = 'local'
+let activeTenantKey: string | null = 'sdc-local'
 
 export function getTenantContext(): { tenantId: string | null; apiKey: string | null } {
   return { tenantId: activeTenantId, apiKey: activeTenantKey }
@@ -155,7 +155,9 @@ export const api = {
 }
 
 export function connectWs(onEvent: (ev: SimEvent) => void): WebSocket {
-  const ws = new WebSocket(WS_URL)
+  const { apiKey } = getTenantContext()
+  const url = apiKey ? `${WS_URL}?api_key=${encodeURIComponent(apiKey)}` : WS_URL
+  const ws = new WebSocket(url)
   ws.onmessage = (m) => {
     try {
       onEvent(JSON.parse(m.data))
@@ -291,6 +293,34 @@ export interface TenantInfo {
   quota?: Record<string, number>
 }
 
+export interface QuotaSnapshot {
+  tenant_id?: string
+  reserved_s?: number
+  outstanding_jobs?: number
+  outstanding_work?: number
+  quota_reserved_s?: number
+  quota_outstanding_jobs?: number
+  quota_work?: number
+  [key: string]: number | string | undefined
+}
+
+export interface Reservation {
+  job_id: string
+  tenant_id: string
+  node_id: string
+  start: number
+  end: number
+}
+
+export interface LinkReservation {
+  job_id: string
+  tenant_id: string
+  link_id: string
+  start: number
+  end: number
+  bytes?: number
+}
+
 export interface MarketDayReport {
   id?: string
   scenario_id?: string
@@ -336,6 +366,7 @@ export interface BaselineComparison {
 export interface Plan {
   id: string
   job_id: string
+  tenant_id?: string
   compute_node_id: string
   input_route: Hop[]
   output_route: Hop[]
@@ -353,6 +384,7 @@ export interface Plan {
 
 export interface Job {
   id: string
+  tenant_id?: string
   submitted_at: number
   input_bytes: number
   output_bytes: number
@@ -408,6 +440,11 @@ export interface Snapshot {
   plans: Plan[]
   transfers: Transfer[]
   reality: Record<string, string>
+  tenants?: TenantInfo[]
+  reservations?: Reservation[]
+  link_reservations?: LinkReservation[]
+  quotas?: Record<string, QuotaSnapshot>
+  stolen_windows?: number
 }
 
 export interface JobSubmit {

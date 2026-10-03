@@ -134,10 +134,10 @@ describe('dashboard wiring', () => {
     expect(api.play).toHaveBeenCalled()
   })
 
-  it('switches tenant and runs market day', async () => {
+  it('switches tenant and runs market day from Shared sky', async () => {
     render(<App />)
     await waitFor(() => expect(api.listTenants).toHaveBeenCalled())
-    fireEvent.click(screen.getByTestId('toggle-advanced'))
+    expect(screen.getByTestId('shared-sky')).toBeTruthy()
     fireEvent.change(screen.getByTestId('tenant-select'), { target: { value: 'beta' } })
     expect(api.setActiveTenant).toHaveBeenCalledWith('beta')
     fireEvent.click(screen.getByTestId('run-market-day'))
